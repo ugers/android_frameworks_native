@@ -29,6 +29,7 @@
 
 #include <gui/IGraphicBufferAlloc.h>
 #include <gui/ISurfaceComposerClient.h>
+#include <gui/ISurfaceClient.h>
 
 namespace android {
 // ----------------------------------------------------------------------------
@@ -109,6 +110,11 @@ public:
     /* returns information about a display
      * intended to be used to get information about built-in displays */
     virtual status_t getDisplayInfo(const sp<IBinder>& display, DisplayInfo* info) = 0;
+
+	virtual int      setDisplayProp(int cmd,int param0,int param1,int param2) = 0;
+    virtual int      getDisplayProp(int cmd,int param0,int param1) = 0;
+    virtual void     registerClient(const sp<ISurfaceClient>& client) = 0;
+	virtual void     unregisterClient() = 0;
 };
 
 // ----------------------------------------------------------------------------
@@ -131,6 +137,10 @@ public:
         UNBLANK,
         GET_DISPLAY_INFO,
         CONNECT_DISPLAY,
+        SET_DISPLAYPROP,
+        GET_DISPLAYPROP,
+        REGISTER_CLIENT,
+        UNREGISTER_CLIENT,
     };
 
     virtual status_t onTransact(uint32_t code, const Parcel& data,
@@ -142,3 +152,4 @@ public:
 }; // namespace android
 
 #endif // ANDROID_GUI_ISURFACE_COMPOSER_H
+

@@ -32,6 +32,9 @@
 
 #include "Transform.h"
 
+#include <ui/DisplayCommand.h>
+#include "DisplayDispatcher.h"
+
 struct ANativeWindow;
 
 namespace android {
@@ -146,6 +149,10 @@ public:
      */
     uint32_t getPageFlipCount() const;
     void dump(String8& result, char* buffer, size_t SIZE) const;
+
+  sp<DisplayDispatcher>  mDisplayDispatcher;
+    int setDispProp(int cmd,int param0,int param1,int param2) const;
+    int getDispProp(int cmd,int param0,int param1) const;
 
 private:
     void init(EGLConfig config);

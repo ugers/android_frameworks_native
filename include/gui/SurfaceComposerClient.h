@@ -30,6 +30,7 @@
 #include <ui/PixelFormat.h>
 
 #include <gui/Surface.h>
+#include <gui/ISurfaceClient.h>
 
 namespace android {
 
@@ -75,13 +76,13 @@ public:
     // TODO: Remove me.  Do not use.
     // This is a compatibility shim for one product whose drivers are depending on
     // this legacy function (when they shouldn't).
-    static status_t getDisplayInfo(int32_t displayId, DisplayInfo* info);
+    //static status_t getDisplayInfo(int32_t displayId, DisplayInfo* info);
 
-#if defined(ICS_CAMERA_BLOB) || defined(MR0_CAMERA_BLOB)
-    static ssize_t getDisplayWidth(int32_t displayId);
-    static ssize_t getDisplayHeight(int32_t displayId);
-    static ssize_t getDisplayOrientation(int32_t displayId);
-#endif
+//#if defined(ICS_CAMERA_BLOB) || defined(MR0_CAMERA_BLOB)
+    //static ssize_t getDisplayWidth(int32_t displayId);
+    //static ssize_t getDisplayHeight(int32_t displayId);
+    //static ssize_t getDisplayOrientation(int32_t displayId);
+//#endif
 
     // ------------------------------------------------------------------------
     // surface creation / destruction
@@ -115,7 +116,7 @@ public:
     //! Close a composer transaction on all active SurfaceComposerClients.
     static void closeGlobalTransaction(bool synchronous = false);
 
-    static int setOrientation(int32_t dpy, int orientation, uint32_t flags);
+    //static int setOrientation(int32_t dpy, int orientation, uint32_t flags);
 
     //! Flag the currently open transaction as an animation transaction.
     static void setAnimationTransaction();
@@ -153,6 +154,11 @@ public:
             const Rect& layerStackRect,
             const Rect& displayRect);
 
+  static int  setDisplayProp(int cmd,int param0,int param1,int param2);
+  static int  getDisplayProp(int cmd,int param0,int param1);
+  static void    registerSurfaceClient(const sp<ISurfaceClient>& client);
+  static void    unregisterSurfaceClient();
+
 private:
     virtual void onFirstRef();
     Composer& getComposer();
@@ -177,7 +183,7 @@ public:
     // TODO: Remove me.  Do not use.
     // This is a compatibility shim for one product whose drivers are depending on
     // this legacy function (when they shouldn't).
-    status_t update();
+    //status_t update();
 
     // frees the previous screenshot and capture a new one
     status_t update(const sp<IBinder>& display);

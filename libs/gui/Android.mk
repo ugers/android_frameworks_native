@@ -25,7 +25,8 @@ LOCAL_SRC_FILES:= \
 	DummyConsumer.cpp \
 	CpuConsumer.cpp \
 	BufferItemConsumer.cpp \
-	GuiConfig.cpp
+	GuiConfig.cpp \
+	ISurfaceClient.cpp
 
 LOCAL_SHARED_LIBRARIES := \
 	libbinder \

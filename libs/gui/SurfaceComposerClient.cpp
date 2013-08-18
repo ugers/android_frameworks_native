@@ -38,6 +38,7 @@
 
 #include <private/gui/ComposerService.h>
 #include <private/gui/LayerState.h>
+#include <gui/ISurfaceClient.h>
 
 namespace android {
 // ---------------------------------------------------------------------------
@@ -393,15 +394,6 @@ void Composer::setDisplayProjection(const sp<IBinder>& token,
     mForceSynchronous = true; // TODO: do we actually still need this?
 }
 
-status_t Composer::setOrientation(int orientation) {
-    sp<ISurfaceComposer> sm(ComposerService::getComposerService());
-    sp<IBinder> token(sm->getBuiltInDisplay(ISurfaceComposer::eDisplayIdMain));
-    DisplayState& s(getDisplayStateLocked(token));
-    s.orientation = orientation;
-    mForceSynchronous = true; // TODO: do we actually still need this?
-    return NO_ERROR;
-}
-
 // ---------------------------------------------------------------------------
 
 SurfaceComposerClient::SurfaceComposerClient()
@@ -448,30 +440,6 @@ void SurfaceComposerClient::dispose() {
         mClient.clear();
     }
     mStatus = NO_INIT;
-}
-
-/* Create ICS/MR0-compatible constructors */
-extern "C" sp<SurfaceControl> _ZN7android21SurfaceComposerClient13createSurfaceERKNS_7String8Ejjij(
-        const String8& name,
-        uint32_t w,
-        uint32_t h,
-        PixelFormat format,
-        uint32_t flags);
-extern "C" sp<SurfaceControl> _ZN7android21SurfaceComposerClient13createSurfaceEijjij(
-        uint32_t display,
-        uint32_t w,
-        uint32_t h,
-        PixelFormat format,
-        uint32_t flags)
-{
-    String8 name;
-    const size_t SIZE = 128;
-    char buffer[SIZE];
-    snprintf(buffer, SIZE, "<pid_%d>", getpid());
-    name.append(buffer);
-
-    return _ZN7android21SurfaceComposerClient13createSurfaceERKNS_7String8Ejjij(name,
-            w, h, format, flags);
 }
 
 sp<SurfaceControl> SurfaceComposerClient::createSurface(
@@ -580,11 +548,6 @@ status_t SurfaceComposerClient::setMatrix(SurfaceID id, float dsdx, float dtdx,
     return getComposer().setMatrix(this, id, dsdx, dtdx, dsdy, dtdy);
 }
 
-status_t SurfaceComposerClient::setOrientation(int32_t dpy, int orientation, uint32_t flags)
-{
-    return Composer::getInstance().setOrientation(orientation);
-}
-
 // ----------------------------------------------------------------------------
 
 void SurfaceComposerClient::setDisplaySurface(const sp<IBinder>& token,
@@ -621,47 +584,51 @@ void SurfaceComposerClient::unblankDisplay(const sp<IBinder>& token) {
     ComposerService::getComposerService()->unblank(token);
 }
 
-// TODO: Remove me.  Do not use.
-// This is a compatibility shim for one product whose drivers are depending on
-// this legacy function (when they shouldn't).
-status_t SurfaceComposerClient::getDisplayInfo(
-        int32_t displayId, DisplayInfo* info)
+int  SurfaceComposerClient::setDisplayProp(int cmd,int param0,int param1,int param2)
 {
-    return getDisplayInfo(getBuiltInDisplay(displayId), info);
+    sp<ISurfaceComposer> s(ComposerService::getComposerService());
+    if (s == NULL) return NO_INIT;
+    return s->setDisplayProp(cmd,param0,param1,param2);
 }
 
-#if defined(ICS_CAMERA_BLOB) || defined(MR0_CAMERA_BLOB)
-ssize_t SurfaceComposerClient::getDisplayWidth(int32_t displayId) {
-    DisplayInfo info;
-    getDisplayInfo(getBuiltInDisplay(displayId), &info);
-    return info.w;
+int  SurfaceComposerClient::getDisplayProp(int cmd,int param0,int param1)
+{
+    sp<ISurfaceComposer> s(ComposerService::getComposerService());
+    if (s == NULL) return NO_INIT;
+
+    return s->getDisplayProp(cmd,param0,param1);
 }
 
-ssize_t SurfaceComposerClient::getDisplayHeight(int32_t displayId) {
-    DisplayInfo info;
-    getDisplayInfo(getBuiltInDisplay(displayId), &info);
-    return info.h;
+void  SurfaceComposerClient::registerSurfaceClient(const sp<ISurfaceClient>& client)
+{
+    sp<ISurfaceComposer> s(ComposerService::getComposerService());
+    if (s == NULL) 
+    {
+    	ALOGD("get ISurfaceComposer failed!\n");
+    	
+    	return ;
+    }
+
+    return s->registerClient(client);
 }
 
-ssize_t SurfaceComposerClient::getDisplayOrientation(int32_t displayId) {
-    DisplayInfo info;
-    getDisplayInfo(getBuiltInDisplay(displayId), &info);
-    return info.orientation;
+void  SurfaceComposerClient::unregisterSurfaceClient()
+{
+    sp<ISurfaceComposer> s(ComposerService::getComposerService());
+    if (s == NULL) 
+    {
+    	ALOGD("get ISurfaceComposer failed!\n");
+    	
+    	return ;
+    }
+
+    return s->unregisterClient();
 }
-#endif
 
 // ----------------------------------------------------------------------------
 
 ScreenshotClient::ScreenshotClient()
     : mWidth(0), mHeight(0), mFormat(PIXEL_FORMAT_NONE) {
-}
-
-// TODO: Remove me.  Do not use.
-// This is a compatibility shim for one product whose drivers are depending on
-// this legacy function (when they shouldn't).
-status_t ScreenshotClient::update() {
-    sp<ISurfaceComposer> sm(ComposerService::getComposerService());
-    return update(sm->getBuiltInDisplay(0));
 }
 
 status_t ScreenshotClient::update(const sp<IBinder>& display) {

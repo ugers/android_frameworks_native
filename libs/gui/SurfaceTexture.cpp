@@ -128,6 +128,7 @@ SurfaceTexture::SurfaceTexture(GLuint tex, bool allowSynchronousMode,
     mTexTarget(texTarget),
     mEglDisplay(EGL_NO_DISPLAY),
     mEglContext(EGL_NO_CONTEXT),
+    mTransformExternal(true),
     mCurrentTexture(BufferQueue::INVALID_BUFFER_SLOT),
     mAttached(true)
 {
@@ -297,6 +298,7 @@ status_t SurfaceTexture::updateTexImage(BufferRejecter* rejecter, bool skipSync)
         mCurrentTransform = item.mTransform;
         mCurrentScalingMode = item.mScalingMode;
         mCurrentTimestamp = item.mTimestamp;
+        mTransformExternal  = false;
         mCurrentFence = item.mFence;
         if (!skipSync) {
             // SurfaceFlinger needs to lazily perform GLES synchronization
@@ -674,7 +676,14 @@ void SurfaceTexture::computeCurrentTransformMatrixLocked() {
 nsecs_t SurfaceTexture::getTimestamp() {
     ST_LOGV("getTimestamp");
     Mutex::Autolock lock(mMutex);
-    return mCurrentTimestamp;
+    if(mTransformExternal == false)
+    {
+        return mCurrentTimestamp;
+    }
+    else
+    {
+        return mBufferQueue->getTimestamp();//todo
+    }
 }
 
 EGLImageKHR SurfaceTexture::createImage(EGLDisplay dpy,
@@ -701,7 +710,12 @@ sp<GraphicBuffer> SurfaceTexture::getCurrentBuffer() const {
 Rect SurfaceTexture::getCurrentCrop() const {
     Mutex::Autolock lock(mMutex);
 
-    Rect outCrop = mCurrentCrop;
+    Rect outCrop;
+    
+    if(mTransformExternal == false)
+    {
+        outCrop = mCurrentCrop;
+
     if (mCurrentScalingMode == NATIVE_WINDOW_SCALING_MODE_SCALE_CROP) {
         int32_t newWidth = mCurrentCrop.width();
         int32_t newHeight = mCurrentCrop.height();
@@ -730,18 +744,37 @@ Rect SurfaceTexture::getCurrentCrop() const {
             outCrop.left, outCrop.top,
             outCrop.right,outCrop.bottom);
     }
+    else
+    {
+        outCrop = mBufferQueue->getCrop();//todo
+    }
 
     return outCrop;
 }
 
 uint32_t SurfaceTexture::getCurrentTransform() const {
     Mutex::Autolock lock(mMutex);
-    return mCurrentTransform;
+    if(mTransformExternal == false)
+    {
+        return mCurrentTransform;
+    }
+    else
+    {
+        return mBufferQueue->getCurrentTransform();//todo
+    }
+}
 }
 
 uint32_t SurfaceTexture::getCurrentScalingMode() const {
     Mutex::Autolock lock(mMutex);
-    return mCurrentScalingMode;
+    if(mTransformExternal == false)
+    {
+        return mCurrentScalingMode;
+    }
+    else
+    {
+        return mBufferQueue->getCurrentScalingMode();//todo
+    }
 }
 
 sp<Fence> SurfaceTexture::getCurrentFence() const {
@@ -902,6 +935,19 @@ static void mtxMul(float out[16], const float a[16], const float b[16]) {
     out[13] = a[1]*b[12] + a[5]*b[13] + a[9]*b[14] + a[13]*b[15];
     out[14] = a[2]*b[12] + a[6]*b[13] + a[10]*b[14] + a[14]*b[15];
     out[15] = a[3]*b[12] + a[7]*b[13] + a[11]*b[14] + a[15]*b[15];
+}
+
+status_t SurfaceTexture::setCrop(const Rect& crop) {
+    ST_LOGV("setCrop: crop=[%d,%d,%d,%d]", crop.left, crop.top, crop.right,
+            crop.bottom);
+
+    Mutex::Autolock lock(mMutex);
+    if (mAbandoned) {
+        ST_LOGE("setCrop: SurfaceTexture has been abandoned!");
+        return NO_INIT;
+    }
+    mCurrentCrop = crop;
+    return OK;
 }
 
 }; // namespace android

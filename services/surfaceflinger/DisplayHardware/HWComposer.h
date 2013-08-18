@@ -21,6 +21,7 @@
 #include <sys/types.h>
 
 #include <hardware/hwcomposer_defs.h>
+#include <hardware/hwcomposer.h>
 
 #include <utils/Condition.h>
 #include <utils/Mutex.h>
@@ -127,6 +128,9 @@ public:
     int fbCompositionComplete();
     void fbDump(String8& result);
 
+  int setParameter(uint32_t cmd,uint32_t value);
+    uint32_t getParameter(uint32_t cmd);
+
     /*
      * Interface to hardware composer's layers functionality.
      * This abstracts the HAL interface to layers which can evolve in
@@ -152,6 +156,7 @@ public:
         virtual void setBuffer(const sp<GraphicBuffer>& buffer) = 0;
         virtual void setAcquireFenceFd(int fenceFd) = 0;
         virtual void onDisplayed() = 0;
+        virtual void setFormat(uint32_t format) = 0;
     };
 
     /*

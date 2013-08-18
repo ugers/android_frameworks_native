@@ -211,6 +211,9 @@ public:
     // current at the time of the last call to detachFromContext.
     status_t attachToContext(GLuint tex);
 
+  bool  mTransformExternal;
+    virtual status_t setCrop(const Rect& reg);
+
 protected:
 
     // abandonLocked overrides the ConsumerBase method to clear

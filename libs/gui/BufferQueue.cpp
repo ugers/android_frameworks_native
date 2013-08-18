@@ -32,6 +32,9 @@
 #include <gui/SurfaceTexture.h>
 #include <utils/Trace.h>
 
+#include <hardware/hardware.h>
+#include <hardware/hwcomposer.h>
+
 // Macros for including the BufferQueue name in log messages
 #define ST_LOGV(x, ...) ALOGV("[%s] "x, mConsumerName.string(), ##__VA_ARGS__)
 #define ST_LOGD(x, ...) ALOGD("[%s] "x, mConsumerName.string(), ##__VA_ARGS__)
@@ -364,7 +367,7 @@ status_t BufferQueue::dequeueBuffer(int *outBuf, sp<Fence>& outFence,
             }
 
             const int maxBufferCount = getMaxBufferCountLocked();
-
+            //ST_LOGD("maxBufferCount: %d", maxBufferCount);
             // Free up any buffers that are in slots beyond the max buffer
             // count.
             for (int i = maxBufferCount; i < NUM_BUFFER_SLOTS; i++) {
@@ -396,6 +399,8 @@ status_t BufferQueue::dequeueBuffer(int *outBuf, sp<Fence>& outFence,
                     }
                 }
             }
+
+            //ST_LOGD("dequeuedCount: %d", dequeuedCount);
 
             // clients are not allowed to dequeue more than one buffer
             // if they didn't set a buffer count.
@@ -451,6 +456,7 @@ status_t BufferQueue::dequeueBuffer(int *outBuf, sp<Fence>& outFence,
 
         // buffer is now in DEQUEUED (but can also be current at the same time,
         // if we're in synchronous mode)
+        //ST_LOGD("dequeueBuffer================================!!");
         mSlots[buf].mBufferState = BufferSlot::DEQUEUED;
 
         const sp<GraphicBuffer>& buffer(mSlots[buf].mGraphicBuffer);
@@ -698,6 +704,8 @@ status_t BufferQueue::queueBuffer(int buf,
                 break;
         }
 
+        //ST_LOGD("queueBuffer================================!!");
+
         mSlots[buf].mBufferState = BufferSlot::QUEUED;
         mSlots[buf].mScalingMode = scalingMode;
         mFrameCounter++;
@@ -766,6 +774,8 @@ status_t BufferQueue::connect(int api, QueueBufferOutput* output) {
         case NATIVE_WINDOW_API_CPU:
         case NATIVE_WINDOW_API_MEDIA:
         case NATIVE_WINDOW_API_CAMERA:
+        case NATIVE_WINDOW_API_MEDIA_HW:
+        case NATIVE_WINDOW_API_CAMERA_HW:
             if (mConnectedApi != NO_CONNECTED_API) {
                 ST_LOGE("connect: already connected (cur=%d, req=%d)",
                         mConnectedApi, api);
@@ -807,6 +817,8 @@ status_t BufferQueue::disconnect(int api) {
             case NATIVE_WINDOW_API_CPU:
             case NATIVE_WINDOW_API_MEDIA:
             case NATIVE_WINDOW_API_CAMERA:
+            case NATIVE_WINDOW_API_MEDIA_HW:
+            case NATIVE_WINDOW_API_CAMERA_HW:
                 if (mConnectedApi == api) {
                     drainQueueAndFreeBuffersLocked();
                     mConnectedApi = NO_CONNECTED_API;
@@ -1183,6 +1195,89 @@ int BufferQueue::getMaxBufferCountLocked() const {
     }
 
     return maxBufferCount;
+}
+
+bool BufferQueue::IsHardwareRenderSupport()
+{
+    if(mDefaultBufferFormat >= HWC_FORMAT_MINVALUE && mDefaultBufferFormat <= HWC_FORMAT_MAXVALUE)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+int BufferQueue::setParameter(uint32_t cmd,uint32_t value)
+{
+    if(cmd == HWC_LAYER_SETINITPARA)
+	{
+		layerinitpara_t  *layer_info;
+		
+		layer_info = (layerinitpara_t  *)value;
+        mDefaultBufferFormat = layer_info->format;
+	}
+
+    if(IsHardwareRenderSupport())
+    {
+        return 100;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+uint32_t BufferQueue::getParameter(uint32_t cmd)
+{
+	if(cmd == NATIVE_WINDOW_CMD_GET_SURFACE_TEXTURE_TYPE) {
+		return 0;
+	}
+    return 0;
+}
+
+
+status_t BufferQueue::setCrop(const Rect& crop) {
+    ST_LOGV("############BufferQueue::setCrop: crop=[%d,%d,%d,%d]", crop.left, crop.top, crop.right,
+            crop.bottom);
+
+    mCurrentCrop = crop;
+    return OK;
+}
+
+Rect BufferQueue::getCrop() {
+    ST_LOGV("setCrop: crop=[%d,%d,%d,%d]", crop.left, crop.top, crop.right,
+            crop.bottom);
+
+    return mCurrentCrop;
+}
+
+status_t BufferQueue::setCurrentTransform(uint32_t transform) {
+    mCurrentTransform = transform;
+    return OK;
+}
+
+uint32_t BufferQueue::getCurrentTransform() {
+    return mCurrentTransform;
+}
+
+status_t BufferQueue::setCurrentScalingMode(int scalingMode) {
+    mCurrentScalingMode = scalingMode;
+    return OK;
+}
+
+int BufferQueue::getCurrentScalingMode() {
+
+    return mCurrentScalingMode;
+}
+
+status_t BufferQueue::setTimestamp(int64_t timestamp) {
+    mCurrentTimestamp = timestamp;
+    return OK;
+}
+
+int64_t BufferQueue::getTimestamp() 
+{
+    return mCurrentTimestamp;
 }
 
 BufferQueue::ProxyConsumerListener::ProxyConsumerListener(
