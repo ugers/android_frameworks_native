@@ -743,6 +743,7 @@ Rect SurfaceTexture::getCurrentCrop() const {
         ST_LOGV("getCurrentCrop final crop [%d,%d,%d,%d]",
             outCrop.left, outCrop.top,
             outCrop.right,outCrop.bottom);
+        }
     }
     else
     {
@@ -762,7 +763,6 @@ uint32_t SurfaceTexture::getCurrentTransform() const {
     {
         return mBufferQueue->getCurrentTransform();//todo
     }
-}
 }
 
 uint32_t SurfaceTexture::getCurrentScalingMode() const {
