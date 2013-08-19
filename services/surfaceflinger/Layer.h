@@ -95,6 +95,15 @@ public:
     // the current orientation of the display device.
     virtual void updateTransformHint(const sp<const DisplayDevice>& hw) const;
 
+    int 	texture_srcw;
+    int 	texture_srch;
+    int		oldtexture_srcw;
+    int		oldtexture_srch;
+    int 	texture_format;
+    void        setTextureInfo(Rect Crop,int format);
+    int         setDisplayParameter(uint32_t cmd,uint32_t  value);
+    uint32_t    getDisplayParameter(uint32_t cmd);
+
 protected:
     virtual void onFirstRef();
     virtual void dump(String8& result, char* scratch, size_t size) const;

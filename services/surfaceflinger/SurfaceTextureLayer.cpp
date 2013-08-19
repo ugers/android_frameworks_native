@@ -22,13 +22,16 @@
 
 #include "Layer.h"
 #include "SurfaceTextureLayer.h"
+#include <hardware/hwcomposer.h>
 
 namespace android {
 // ---------------------------------------------------------------------------
 
 
-SurfaceTextureLayer::SurfaceTextureLayer()
+SurfaceTextureLayer::SurfaceTextureLayer(const sp<Layer>& layer)
     : BufferQueue(true) {
+    usehwinit     = false;
+    mLayer  = layer;
 }
 
 SurfaceTextureLayer::~SurfaceTextureLayer() {
@@ -38,6 +41,9 @@ status_t SurfaceTextureLayer::connect(int api, QueueBufferOutput* output) {
     status_t err = BufferQueue::connect(api, output);
     if (err == NO_ERROR) {
         switch(api) {
+            case NATIVE_WINDOW_API_MEDIA_HW:
+            case NATIVE_WINDOW_API_CAMERA_HW:
+		break;
             case NATIVE_WINDOW_API_MEDIA:
             case NATIVE_WINDOW_API_CAMERA:
                 // Camera preview and videos are rate-limited on the producer
@@ -59,6 +65,81 @@ status_t SurfaceTextureLayer::connect(int api, QueueBufferOutput* output) {
         }
     }
     return err;
+}
+
+status_t SurfaceTextureLayer::disconnect(int api) 
+{
+    status_t err = BufferQueue::disconnect(api);
+
+    switch (api) 
+    {
+		case NATIVE_WINDOW_API_MEDIA_HW:
+        case NATIVE_WINDOW_API_CAMERA_HW:
+        {
+            sp<Layer> layer(mLayer.promote());
+            usehwinit     = false;
+            if (layer != NULL) 
+            {
+                Rect Crop(0,0,0,0);
+                layer->setTextureInfo(Crop, 0);
+            }
+        }
+        default:
+            break;
+    }
+    return err;
+}
+
+int SurfaceTextureLayer::setParameter(uint32_t cmd,uint32_t value) 
+{
+    int res = 0;
+
+	BufferQueue::setParameter(cmd,value);
+	
+    sp<Layer> layer(mLayer.promote());
+    if (layer != NULL) 
+    {
+    	if(cmd == HWC_LAYER_SETINITPARA)
+    	{
+    		layerinitpara_t  *layer_info;
+    		
+    		layer_info = (layerinitpara_t  *)value;
+
+            if(IsHardwareRenderSupport())
+            {
+                const Rect Crop(0,0,layer_info->w,layer_info->h);
+                
+    		    layer->setTextureInfo(Crop,layer_info->format);
+
+                usehwinit = true;
+            }
+    	}
+
+        if(usehwinit == true)
+        {
+        	res = layer->setDisplayParameter(cmd,value);
+        }
+    }
+    
+    return res;
+}
+
+
+uint32_t SurfaceTextureLayer::getParameter(uint32_t cmd) 
+{
+    uint32_t res = 0;
+    
+	if(cmd == NATIVE_WINDOW_CMD_GET_SURFACE_TEXTURE_TYPE) {
+		return 1;
+	}
+
+    sp<Layer> layer(mLayer.promote());
+    if (layer != NULL) 
+    {
+        res = layer->getDisplayParameter(cmd);
+    }
+    
+    return res;
 }
 
 // ---------------------------------------------------------------------------

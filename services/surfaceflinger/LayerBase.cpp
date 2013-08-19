@@ -49,6 +49,12 @@ LayerBase::LayerBase(SurfaceFlinger* flinger)
       mTransactionFlags(0),
       mPremultipliedAlpha(true), mName("unnamed"), mDebug(false)
 {
+	const sp<const DisplayDevice> hw(mFlinger->getDefaultDisplayDevice());
+	if(hw->setDispProp(DISPLAY_CMD_GETDISPLAYMODE,0,0,0) == DISPLAY_MODE_SINGLE_VAR_GPU)
+    {
+        mDispWidth = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_VALID_WIDTH,0);
+        mDispHeight = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_VALID_HEIGHT,0);
+    }
 }
 
 LayerBase::~LayerBase()
@@ -296,6 +302,7 @@ void LayerBase::setGeometry(
     // scaling is already applied in transformedBounds
     layer.setFrame(transformedBounds);
     layer.setCrop(transformedBounds.getBounds());
+    layer.setFormat(0);
 }
 
 void LayerBase::setPerFrameData(const sp<const DisplayDevice>& hw,
@@ -373,6 +380,12 @@ void LayerBase::drawWithOpenGL(const sp<const DisplayDevice>& hw, const Region& 
     const uint32_t fbHeight = hw->getHeight();
     const State& s(drawingState());
 
+	/*if(hw->setDispProp(DISPLAY_CMD_GETDISPLAYMODE,0,0,0) == DISPLAY_MODE_SINGLE_VAR_GPU)
+    {
+        mDispWidth = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_VALID_WIDTH,0);
+        mDispHeight = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_VALID_HEIGHT,0);
+    }*/
+
     GLenum src = mPremultipliedAlpha ? GL_ONE : GL_SRC_ALPHA;
     if (CC_UNLIKELY(s.alpha < 0xFF)) {
         const GLfloat alpha = s.alpha * (1.0f/255.0f);
@@ -438,6 +451,71 @@ void LayerBase::drawWithOpenGL(const sp<const DisplayDevice>& hw, const Region& 
     glEnableClientState(GL_TEXTURE_COORD_ARRAY);
     glTexCoordPointer(2, GL_FLOAT, 0, texCoords);
     glVertexPointer(2, GL_FLOAT, 0, mesh.getVertices());
+
+	if(hw->setDispProp(DISPLAY_CMD_GETDISPLAYMODE,0,0,0) == DISPLAY_MODE_SINGLE_VAR_GPU)
+    {   
+        int app_width = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_APP_WIDTH,0);
+        int app_height = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_APP_HEIGHT,0);
+        int vp_w = hw->getWidth() * mDispWidth / app_width;
+        int vp_h = hw->getHeight() * mDispHeight / app_height;
+        int scissor_w = hw->getWidth();
+        int scissor_h = hw->getHeight();
+
+        if(mDispWidth > app_width)
+        {
+            scissor_w = hw->getWidth()*mDispWidth/app_width;
+        }
+        if(mDispHeight > app_height)
+        {
+            scissor_h = hw->getHeight()*mDispHeight/app_height;
+        }
+        glScissor(0,0,scissor_w,scissor_h);
+        
+        if(hw->getOrientation() == 0)
+        {
+            glViewport(0, hw->getHeight() - vp_h, vp_w, vp_h);
+        }
+        else if(hw->getOrientation() == 1)
+        {
+            if(hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_OUTPUT_TYPE,0) != DISPLAY_DEVICE_LCD)
+            {
+                glLoadIdentity();                
+                glTranslatef(hw->getWidth()+hw->getHeight()-app_height,hw->getHeight()-hw->getWidth(),0.0f);
+                glRotatef(90,0.0f,0.0f,1.0f);
+                app_width = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_APP_HEIGHT,0);
+                app_height = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_APP_WIDTH,0);
+                vp_w = hw->getWidth() * mDispWidth / app_width;
+                vp_h = hw->getHeight() * mDispHeight / app_height;
+            }
+            glViewport(hw->getWidth() - vp_w, hw->getHeight() - vp_h, vp_w, vp_h);
+        }
+        else if(hw->getOrientation() == 2)
+        {
+            if(hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_OUTPUT_TYPE,0) != DISPLAY_DEVICE_LCD)
+            {
+                glLoadIdentity();
+                glTranslatef(hw->getWidth()+hw->getWidth()-app_width,app_height,0.0f);
+                glRotatef(180,0.0f,0.0f,1.0f);
+            }
+            glViewport(hw->getWidth() - vp_w, 0, vp_w, vp_h);
+        }
+        else if(hw->getOrientation() == 3)
+        {
+            if(hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_OUTPUT_TYPE,0) != DISPLAY_DEVICE_LCD)
+            {
+                glLoadIdentity();
+                glTranslatef(0.0f,app_width,0.0f);
+                glRotatef(270,0.0f,0.0f,1.0f);
+                app_width = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_APP_HEIGHT,0);
+                app_height = hw->setDispProp(DISPLAY_CMD_GETDISPPARA,0,DISPLAY_APP_WIDTH,0);
+                vp_w = hw->getWidth() * mDispWidth / app_width;
+                vp_h = hw->getHeight() * mDispHeight / app_height;
+            }
+            glViewport(0, 0, vp_w, vp_h);
+        }
+        ALOGV("app_width:%d,app_height:%d,mDispWidth:%d,mDispHeight:%d,vp_w:%d,vp_h:%d\n",app_width,app_height,mDispWidth,mDispHeight,vp_w,vp_h);
+    }
+
     glDrawArrays(GL_TRIANGLE_FAN, 0, mesh.getVertexCount());
 
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
@@ -487,6 +565,12 @@ sp<LayerBaseClient> LayerBase::getLayerBaseClient() const {
 
 sp<Layer> LayerBase::getLayer() const {
     return 0;
+}
+
+void LayerBase::setDispSize(int w,int h)
+{
+    mDispWidth = w;
+    mDispHeight = h;
 }
 
 // ---------------------------------------------------------------------------

@@ -47,6 +47,7 @@
 #include "Barrier.h"
 #include "MessageQueue.h"
 #include "DisplayDevice.h"
+#include <gui/ISurfaceClient.h>
 
 #include "DisplayHardware/HWComposer.h"
 
@@ -137,6 +138,16 @@ public:
     // for debugging only
     // TODO: this should be made accessible only to HWComposer
     const Vector< sp<LayerBase> >& getLayerSortedByZForHwcDisplay(int disp);
+
+    virtual int setDisplayProp(int cmd,int param0,int param1,int param2);
+    virtual int getDisplayProp(int cmd,int param0,int param1);
+    int         setDisplayParameter(uint32_t cmd,uint32_t  value);
+    uint32_t    getDisplayParameter(uint32_t cmd);
+    virtual void    registerClient(const sp<ISurfaceClient>& client);
+    virtual void    unregisterClient();
+    virtual void    NotifyFramebufferChanged_l(int event, int param = 0);
+    virtual int     NotifyFBConverted_l(unsigned int addr1,unsigned int addr2,int bufid,int64_t proctime);
+    void            removeNotificationClient(pid_t pid);
 
 private:
     friend class Client;
@@ -382,6 +393,40 @@ private:
         return mProtectedTexName;
     }
 
+	// --- Notification Client ---
+    class NotificationClient : public IBinder::DeathRecipient 
+    {
+        public:
+            NotificationClient(const sp<SurfaceFlinger>& audioFlinger,
+                                     const sp<ISurfaceClient>& client,
+                                     pid_t pid);
+            virtual             ~NotificationClient();
+            sp<ISurfaceClient>    client() { return mClient; }
+            // IBinder::DeathRecipient
+            virtual     void        binderDied(const wp<IBinder>& who);
+
+        private:
+            NotificationClient(const NotificationClient&);
+            NotificationClient& operator = (const NotificationClient&);
+
+            sp<SurfaceFlinger>          mSurfaceFlinger;
+            pid_t                       mPid;
+            sp<ISurfaceClient>          mClient;
+    };
+    /*virtual int setDisplayProp(int cmd,int param0,int param1,int param2);
+    virtual int getDisplayProp(int cmd,int param0,int param1);
+    int         setDisplayParameter(uint32_t cmd,uint32_t  value);
+    uint32_t    getDisplayParameter(uint32_t cmd);
+    virtual void    registerClient(const sp<ISurfaceClient>& client);
+	virtual void    unregisterClient();
+    virtual void    NotifyFramebufferChanged_l(int event, int param = 0);
+    virtual int     NotifyFBConverted_l(unsigned int addr1,unsigned int addr2,int bufid,int64_t proctime);
+    void            removeNotificationClient(pid_t pid);*/
+    mutable Mutex   mClientLock;
+    DefaultKeyedVector< pid_t, sp<NotificationClient> >    mNotificationClients;
+    int mDispWidth;
+    int mDispHeight;
+    int mSetDispSize;
     /* ------------------------------------------------------------------------
      * Display management
      */
