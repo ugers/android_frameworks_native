@@ -13,6 +13,7 @@ LOCAL_SRC_FILES := \
 LOCAL_SHARED_LIBRARIES := \
 	libEGL \
 	libcutils \
+	libbinder \
 	libstlport \
 	libutils \
 	libgui \
@@ -29,6 +30,9 @@ LOCAL_C_INCLUDES := \
     external/stlport/stlport \
     frameworks/native/opengl/libs \
     frameworks/native/opengl/libs/EGL \
+
+# gold in binutils 2.22 will warn about the usage of mktemp
+LOCAL_LDFLAGS += -Wl,--no-fatal-warnings
 
 include $(BUILD_EXECUTABLE)
 

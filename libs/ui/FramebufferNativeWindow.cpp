@@ -15,7 +15,6 @@
 ** limitations under the License.
 */
 
-#define ATRACE_TAG ATRACE_TAG_GRAPHICS
 #define LOG_TAG "FramebufferNativeWindow"
 
 #include <stdlib.h>
@@ -37,7 +36,6 @@
 
 #include <hardware/hardware.h>
 #include <hardware/gralloc.h>
-#include <utils/Trace.h>
 
 // ----------------------------------------------------------------------------
 namespace android {
@@ -161,7 +159,6 @@ FramebufferNativeWindow::FramebufferNativeWindow()
     ANativeWindow::queueBuffer = queueBuffer;
     ANativeWindow::query = query;
     ANativeWindow::perform = perform;
-    ANativeWindow::cancelBuffer = NULL;
 
     ANativeWindow::dequeueBuffer_DEPRECATED = dequeueBuffer_DEPRECATED;
     ANativeWindow::lockBuffer_DEPRECATED = lockBuffer_DEPRECATED;
@@ -194,8 +191,6 @@ status_t FramebufferNativeWindow::setUpdateRectangle(const Rect& r)
 
 status_t FramebufferNativeWindow::compositionComplete()
 {
-  ATRACE_CALL();
-
     if (fbDev->compositionComplete) {
         return fbDev->compositionComplete(fbDev);
     }
@@ -245,8 +240,6 @@ int FramebufferNativeWindow::dequeueBuffer_DEPRECATED(ANativeWindow* window,
 int FramebufferNativeWindow::dequeueBuffer(ANativeWindow* window, 
         ANativeWindowBuffer** buffer, int* fenceFd)
 {
-  ATRACE_CALL();
-
     FramebufferNativeWindow* self = getSelf(window);
     Mutex::Autolock _l(self->mutex);
     framebuffer_device_t* fb = self->fbDev;
@@ -286,8 +279,6 @@ int FramebufferNativeWindow::queueBuffer_DEPRECATED(ANativeWindow* window,
 int FramebufferNativeWindow::queueBuffer(ANativeWindow* window, 
         ANativeWindowBuffer* buffer, int fenceFd)
 {
-  ATRACE_CALL();
-
     FramebufferNativeWindow* self = getSelf(window);
     Mutex::Autolock _l(self->mutex);
     framebuffer_device_t* fb = self->fbDev;

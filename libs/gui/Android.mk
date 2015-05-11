@@ -2,31 +2,32 @@ LOCAL_PATH:= $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES:= \
+	IGraphicBufferConsumer.cpp \
+	IConsumerListener.cpp \
 	BitTube.cpp \
+	BufferItemConsumer.cpp \
 	BufferQueue.cpp \
 	ConsumerBase.cpp \
+	CpuConsumer.cpp \
 	DisplayEventReceiver.cpp \
+	GLConsumer.cpp \
+	GraphicBufferAlloc.cpp \
+	GuiConfig.cpp \
 	IDisplayEventConnection.cpp \
+	IGraphicBufferAlloc.cpp \
+	IGraphicBufferProducer.cpp \
 	ISensorEventConnection.cpp \
 	ISensorServer.cpp \
-	ISurfaceTexture.cpp \
+	ISurfaceComposer.cpp \
+	ISurfaceComposerClient.cpp \
+	LayerState.cpp \
 	Sensor.cpp \
 	SensorEventQueue.cpp \
 	SensorManager.cpp \
-	SurfaceTexture.cpp \
-	SurfaceTextureClient.cpp \
-	ISurfaceComposer.cpp \
-	ISurface.cpp \
-	ISurfaceComposerClient.cpp \
-	IGraphicBufferAlloc.cpp \
-	LayerState.cpp \
 	Surface.cpp \
+	SurfaceControl.cpp \
 	SurfaceComposerClient.cpp \
-	DummyConsumer.cpp \
-	CpuConsumer.cpp \
-	BufferItemConsumer.cpp \
-	GuiConfig.cpp \
-	ISurfaceClient.cpp
+	SyncFeatures.cpp \
 
 LOCAL_SHARED_LIBRARIES := \
 	libbinder \
@@ -36,29 +37,38 @@ LOCAL_SHARED_LIBRARIES := \
 	libsync \
 	libui \
 	libutils \
+	liblog
 
+# Executed only on QCOM BSPs
+ifeq ($(TARGET_USES_QCOM_BSP),true)
+ifneq ($(TARGET_QCOM_DISPLAY_VARIANT),)
+    PLATFORM := .
+else
+    PLATFORM := $(TARGET_BOARD_PLATFORM)
+endif
+    LOCAL_C_INCLUDES += $(call project-path-for,qcom-display)/$(PLATFORM)/libgralloc
+    LOCAL_C_INCLUDES += $(call project-path-for,qcom-display)/$(PLATFORM)/libqdutils
+    LOCAL_CFLAGS += -DQCOM_BSP
+endif
+
+ifeq ($(BOARD_EGL_SKIP_FIRST_DEQUEUE),true)
+    LOCAL_CFLAGS += -DSURFACE_SKIP_FIRST_DEQUEUE
+endif
+
+ifeq ($(BOARD_USE_MHEAP_SCREENSHOT),true)
+    LOCAL_CFLAGS += -DUSE_MHEAP_SCREENSHOT
+endif
 
 LOCAL_MODULE:= libgui
 
-ifeq ($(TARGET_BOARD_PLATFORM), omap4)
-	LOCAL_CFLAGS += -DUSE_FENCE_SYNC
+ifeq ($(TARGET_BOARD_PLATFORM), tegra)
+	LOCAL_CFLAGS += -DDONT_USE_FENCE_SYNC
 endif
-ifeq ($(TARGET_BOARD_PLATFORM), s5pc110)
-	LOCAL_CFLAGS += -DUSE_FENCE_SYNC
+ifeq ($(TARGET_BOARD_PLATFORM), tegra3)
+	LOCAL_CFLAGS += -DDONT_USE_FENCE_SYNC
 endif
-ifeq ($(TARGET_BOARD_PLATFORM), exynos5)
-	LOCAL_CFLAGS += -DUSE_NATIVE_FENCE_SYNC
-	LOCAL_CFLAGS += -DUSE_WAIT_SYNC
-endif
-ifneq ($(filter generic%,$(TARGET_DEVICE)),)
-    # Emulator build
-    LOCAL_CFLAGS += -DUSE_FENCE_SYNC
-endif
-
-ifeq ($(call is-vendor-board-platform,QCOM),true)
-ifneq ($(TARGET_QCOM_DISPLAY_VARIANT),legacy)
-	LOCAL_CFLAGS += -DUSE_NATIVE_FENCE_SYNC
-endif
+ifeq ($(TARGET_TOROPLUS_RADIO), true)
+	LOCAL_CFLAGS += -DTOROPLUS_RADIO
 endif
 
 include $(BUILD_SHARED_LIBRARY)

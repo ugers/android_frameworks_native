@@ -21,8 +21,6 @@
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include <GLES/gl.h>
-#include <GLES/glext.h>
 
 #include <cutils/log.h>
 
@@ -39,7 +37,8 @@ namespace android {
 // ----------------------------------------------------------------------------
 
 struct GLenumString {
-    GLenum e;
+    // The GL_TIMEOUT_IGNORED "enum" doesn't fit in a GLenum, so use GLuint64
+    GLuint64 e;
     const char* s;
 };
 
@@ -436,7 +435,7 @@ EGLAPI gl_hooks_t gHooksSystrace = {
     if (error) {                                                          \
         CallStack s;                                                      \
         s.update();                                                       \
-        s.dump("glGetError:" #_api);                                      \
+        s.log("glGetError:" #_api);                                       \
     }                                                                     \
 
 #define TRACE_GL_VOID(_api, _args, _argList, ...)                         \

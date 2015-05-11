@@ -24,6 +24,7 @@
 #include <utils/String8.h>
 #include <utils/Vector.h>
 #include <utils/threads.h>
+#include <gui/IConsumerListener.h>
 
 namespace android {
 // ----------------------------------------------------------------------------
@@ -34,7 +35,7 @@ class String8;
 // handles common tasks like management of the connection to the BufferQueue
 // and the buffer pool.
 class ConsumerBase : public virtual RefBase,
-        protected BufferQueue::ConsumerListener {
+        protected ConsumerListener {
 public:
     struct FrameAvailableListener : public virtual RefBase {
         // onFrameAvailable() is called each time an additional frame becomes
@@ -53,7 +54,7 @@ public:
     // abandon frees all the buffers and puts the ConsumerBase into the
     // 'abandoned' state.  Once put in this state the ConsumerBase can never
     // leave it.  When in the 'abandoned' state, all methods of the
-    // ISurfaceTexture interface will fail with the NO_INIT error.
+    // IGraphicBufferProducer interface will fail with the NO_INIT error.
     //
     // Note that while calling this method causes all the buffers to be freed
     // from the perspective of the the ConsumerBase, if there are additional
@@ -65,32 +66,40 @@ public:
     // log messages.
     void setName(const String8& name);
 
-    // getBufferQueue returns the BufferQueue object to which this
-    // ConsumerBase is connected.
-    sp<BufferQueue> getBufferQueue() const;
-
-    // dump writes the current state to a string.  These methods should NOT be
-    // overridden by child classes.  Instead they should override the
-    // dumpLocked method, which is called by these methods after locking the
-    // mutex.
+    // dump writes the current state to a string. Child classes should add
+    // their state to the dump by overriding the dumpLocked method, which is
+    // called by these methods after locking the mutex.
     void dump(String8& result) const;
-    void dump(String8& result, const char* prefix, char* buffer, size_t SIZE) const;
+    void dump(String8& result, const char* prefix) const;
 
     // setFrameAvailableListener sets the listener object that will be notified
     // when a new frame becomes available.
-    void setFrameAvailableListener(const sp<FrameAvailableListener>& listener);
+    void setFrameAvailableListener(const wp<FrameAvailableListener>& listener);
 
 private:
     ConsumerBase(const ConsumerBase&);
     void operator=(const ConsumerBase&);
 
 protected:
-
     // ConsumerBase constructs a new ConsumerBase object to consume image
-    // buffers from the given BufferQueue.
-    ConsumerBase(const sp<BufferQueue> &bufferQueue);
+    // buffers from the given IGraphicBufferConsumer.
+    // The controlledByApp flag indicates that this consumer is under the application's
+    // control.
+    ConsumerBase(const sp<IGraphicBufferConsumer>& consumer, bool controlledByApp = false);
 
-    // Implementation of the BufferQueue::ConsumerListener interface.  These
+    // onLastStrongRef gets called by RefBase just before the dtor of the most
+    // derived class.  It is used to clean up the buffers so that ConsumerBase
+    // can coordinate the clean-up by calling into virtual methods implemented
+    // by the derived classes.  This would not be possible from the
+    // ConsuemrBase dtor because by the time that gets called the derived
+    // classes have already been destructed.
+    //
+    // This methods should not need to be overridden by derived classes, but
+    // if they are overridden the ConsumerBase implementation must be called
+    // from the derived class.
+    virtual void onLastStrongRef(const void* id);
+
+    // Implementation of the IConsumerListener interface.  These
     // calls are used to notify the ConsumerBase of asynchronous events in the
     // BufferQueue.  These methods should not need to be overridden by derived
     // classes, but if they are overridden the ConsumerBase implementation
@@ -132,8 +141,7 @@ protected:
     // should call ConsumerBase::dumpLocked.
     //
     // This method must be called with mMutex locked.
-    virtual void dumpLocked(String8& result, const char* prefix, char* buffer,
-            size_t size) const;
+    virtual void dumpLocked(String8& result, const char* prefix) const;
 
     // acquireBufferLocked fetches the next buffer from the BufferQueue and
     // updates the buffer slot for the buffer returned.
@@ -142,7 +150,8 @@ protected:
     // initialization that must take place the first time a buffer is assigned
     // to a slot.  If it is overridden the derived class's implementation must
     // call ConsumerBase::acquireBufferLocked.
-    virtual status_t acquireBufferLocked(BufferQueue::BufferItem *item);
+    virtual status_t acquireBufferLocked(IGraphicBufferConsumer::BufferItem *item,
+        nsecs_t presentWhen);
 
     // releaseBufferLocked relinquishes control over a buffer, returning that
     // control to the BufferQueue.
@@ -150,17 +159,23 @@ protected:
     // Derived classes should override this method to perform any cleanup that
     // must take place when a buffer is released back to the BufferQueue.  If
     // it is overridden the derived class's implementation must call
-    // ConsumerBase::releaseBufferLocked.
-    virtual status_t releaseBufferLocked(int buf, EGLDisplay display,
-           EGLSyncKHR eglFence);
+    // ConsumerBase::releaseBufferLocked.e
+    virtual status_t releaseBufferLocked(int slot,
+            const sp<GraphicBuffer> graphicBuffer,
+            EGLDisplay display, EGLSyncKHR eglFence);
+
+    // returns true iff the slot still has the graphicBuffer in it.
+    bool stillTracking(int slot, const sp<GraphicBuffer> graphicBuffer);
 
     // addReleaseFence* adds the sync points associated with a fence to the set
     // of sync points that must be reached before the buffer in the given slot
     // may be used after the slot has been released.  This should be called by
     // derived classes each time some asynchronous work is kicked off that
     // references the buffer.
-    status_t addReleaseFence(int slot, const sp<Fence>& fence);
-    status_t addReleaseFenceLocked(int slot, const sp<Fence>& fence);
+    status_t addReleaseFence(int slot,
+            const sp<GraphicBuffer> graphicBuffer, const sp<Fence>& fence);
+    status_t addReleaseFenceLocked(int slot,
+            const sp<GraphicBuffer> graphicBuffer, const sp<Fence>& fence);
 
     // Slot contains the information and object references that
     // ConsumerBase maintains about a BufferQueue buffer slot.
@@ -174,6 +189,9 @@ protected:
         // overwritten. The buffer can be dequeued before the fence signals;
         // the producer is responsible for delaying writes until it signals.
         sp<Fence> mFence;
+
+        // the frame number of the last acquired frame for this slot
+        uint64_t mFrameNumber;
     };
 
     // mSlots stores the buffers that have been allocated by the BufferQueue
@@ -186,7 +204,7 @@ protected:
     Slot mSlots[BufferQueue::NUM_BUFFER_SLOTS];
 
     // mAbandoned indicates that the BufferQueue will no longer be used to
-    // consume images buffers pushed to it using the ISurfaceTexture
+    // consume images buffers pushed to it using the IGraphicBufferProducer
     // interface. It is initialized to false, and set to true in the abandon
     // method.  A BufferQueue that has been abandoned will return the NO_INIT
     // error from all IConsumerBase methods capable of returning an error.
@@ -199,11 +217,11 @@ protected:
     // mFrameAvailableListener is the listener object that will be called when a
     // new frame becomes available. If it is not NULL it will be called from
     // queueBuffer.
-    sp<FrameAvailableListener> mFrameAvailableListener;
+    wp<FrameAvailableListener> mFrameAvailableListener;
 
     // The ConsumerBase has-a BufferQueue and is responsible for creating this object
     // if none is supplied
-    sp<BufferQueue> mBufferQueue;
+    sp<IGraphicBufferConsumer> mConsumer;
 
     // mMutex is the mutex used to prevent concurrent access to the member
     // variables of ConsumerBase objects. It must be locked whenever the

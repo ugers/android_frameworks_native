@@ -19,8 +19,7 @@
 #include <utils/String8.h>
 
 #include <EGL/egl.h>
-#include <gui/SurfaceTextureClient.h>
-#include <gui/DummyConsumer.h>
+#include <gui/Surface.h>
 
 
 namespace android {
@@ -101,10 +100,15 @@ TEST_F(EGLTest, EGLTerminateSucceedsWithRemainingObjects) {
     };
     EXPECT_TRUE(eglChooseConfig(mEglDisplay, attrs, &config, 1, &numConfigs));
 
+    struct DummyConsumer : public BnConsumerListener {
+        virtual void onFrameAvailable() {}
+        virtual void onBuffersReleased() {}
+    };
+
     // Create a EGLSurface
     sp<BufferQueue> bq = new BufferQueue();
-    bq->consumerConnect(new DummyConsumer());
-    sp<SurfaceTextureClient> mSTC = new SurfaceTextureClient(static_cast<sp<ISurfaceTexture> >( bq));
+    bq->consumerConnect(new DummyConsumer, false);
+    sp<Surface> mSTC = new Surface(static_cast<sp<IGraphicBufferProducer> >( bq));
     sp<ANativeWindow> mANW = mSTC;
 
     EGLSurface eglSurface = eglCreateWindowSurface(mEglDisplay, config,

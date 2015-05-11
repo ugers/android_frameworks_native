@@ -20,10 +20,11 @@
 
 #include <binder/Binder.h>
 #include <binder/BpBinder.h>
+#include <binder/TextOutput.h>
+
 #include <cutils/sched_policy.h>
 #include <utils/Debug.h>
 #include <utils/Log.h>
-#include <utils/TextOutput.h>
 #include <utils/threads.h>
 
 #include <private/binder/binder_module.h>
@@ -361,12 +362,16 @@ status_t IPCThreadState::clearLastError()
     return err;
 }
 
-int IPCThreadState::getCallingPid()
+extern "C" int _ZN7android14IPCThreadState13getCallingPidEv(IPCThreadState *state) {
+    return state->getCallingPid();
+}
+
+int IPCThreadState::getCallingPid() const
 {
     return mCallingPid;
 }
 
-int IPCThreadState::getCallingUid()
+int IPCThreadState::getCallingUid() const
 {
     return mCallingUid;
 }
@@ -417,6 +422,60 @@ void IPCThreadState::flushCommands()
     talkWithDriver(false);
 }
 
+status_t IPCThreadState::getAndExecuteCommand()
+{
+    status_t result;
+    int32_t cmd;
+
+    result = talkWithDriver();
+    if (result >= NO_ERROR) {
+        size_t IN = mIn.dataAvail();
+        if (IN < sizeof(int32_t)) return result;
+        cmd = mIn.readInt32();
+        IF_LOG_COMMANDS() {
+            alog << "Processing top-level Command: "
+                 << getReturnString(cmd) << endl;
+        }
+
+        result = executeCommand(cmd);
+
+        // After executing the command, ensure that the thread is returned to the
+        // foreground cgroup before rejoining the pool.  The driver takes care of
+        // restoring the priority, but doesn't do anything with cgroups so we
+        // need to take care of that here in userspace.  Note that we do make
+        // sure to go in the foreground after executing a transaction, but
+        // there are other callbacks into user code that could have changed
+        // our group so we want to make absolutely sure it is put back.
+        set_sched_policy(mMyThreadId, SP_FOREGROUND);
+    }
+
+    return result;
+}
+
+// When we've cleared the incoming command queue, process any pending derefs
+void IPCThreadState::processPendingDerefs()
+{
+    if (mIn.dataPosition() >= mIn.dataSize()) {
+        size_t numPending = mPendingWeakDerefs.size();
+        if (numPending > 0) {
+            for (size_t i = 0; i < numPending; i++) {
+                RefBase::weakref_type* refs = mPendingWeakDerefs[i];
+                refs->decWeak(mProcess.get());
+            }
+            mPendingWeakDerefs.clear();
+        }
+
+        numPending = mPendingStrongDerefs.size();
+        if (numPending > 0) {
+            for (size_t i = 0; i < numPending; i++) {
+                BBinder* obj = mPendingStrongDerefs[i];
+                obj->decStrong(mProcess.get());
+            }
+            mPendingStrongDerefs.clear();
+        }
+    }
+}
+
 void IPCThreadState::joinThreadPool(bool isMain)
 {
     LOG_THREADPOOL("**** THREAD %p (PID %d) IS JOINING THE THREAD POOL\n", (void*)pthread_self(), getpid());
@@ -430,53 +489,16 @@ void IPCThreadState::joinThreadPool(bool isMain)
         
     status_t result;
     do {
-        int32_t cmd;
-        
-        // When we've cleared the incoming command queue, process any pending derefs
-        if (mIn.dataPosition() >= mIn.dataSize()) {
-            size_t numPending = mPendingWeakDerefs.size();
-            if (numPending > 0) {
-                for (size_t i = 0; i < numPending; i++) {
-                    RefBase::weakref_type* refs = mPendingWeakDerefs[i];
-                    refs->decWeak(mProcess.get());
-                }
-                mPendingWeakDerefs.clear();
-            }
-
-            numPending = mPendingStrongDerefs.size();
-            if (numPending > 0) {
-                for (size_t i = 0; i < numPending; i++) {
-                    BBinder* obj = mPendingStrongDerefs[i];
-                    obj->decStrong(mProcess.get());
-                }
-                mPendingStrongDerefs.clear();
-            }
-        }
-
+        processPendingDerefs();
         // now get the next command to be processed, waiting if necessary
-        result = talkWithDriver();
-        if (result >= NO_ERROR) {
-            size_t IN = mIn.dataAvail();
-            if (IN < sizeof(int32_t)) continue;
-            cmd = mIn.readInt32();
-            IF_LOG_COMMANDS() {
-                alog << "Processing top-level Command: "
-                    << getReturnString(cmd) << endl;
-            }
+        result = getAndExecuteCommand();
 
-
-            result = executeCommand(cmd);
+        if (result < NO_ERROR && result != TIMED_OUT && result != -ECONNREFUSED && result != -EBADF) {
+            ALOGE("getAndExecuteCommand(fd=%d) returned unexpected error %d, aborting",
+                  mProcess->mDriverFD, result);
+            abort();
         }
         
-        // After executing the command, ensure that the thread is returned to the
-        // foreground cgroup before rejoining the pool.  The driver takes care of
-        // restoring the priority, but doesn't do anything with cgroups so we
-        // need to take care of that here in userspace.  Note that we do make
-        // sure to go in the foreground after executing a transaction, but
-        // there are other callbacks into user code that could have changed
-        // our group so we want to make absolutely sure it is put back.
-        set_sched_policy(mMyThreadId, SP_FOREGROUND);
-
         // Let this thread exit the thread pool if it is no longer
         // needed and it is not the main process thread.
         if(result == TIMED_OUT && !isMain) {
@@ -489,6 +511,30 @@ void IPCThreadState::joinThreadPool(bool isMain)
     
     mOut.writeInt32(BC_EXIT_LOOPER);
     talkWithDriver(false);
+}
+
+int IPCThreadState::setupPolling(int* fd)
+{
+    if (mProcess->mDriverFD <= 0) {
+        return -EBADF;
+    }
+
+    mOut.writeInt32(BC_ENTER_LOOPER);
+    *fd = mProcess->mDriverFD;
+    return 0;
+}
+
+status_t IPCThreadState::handlePolledCommands()
+{
+    status_t result;
+
+    do {
+        result = getAndExecuteCommand();
+    } while (mIn.dataPosition() < mIn.dataSize());
+
+    processPendingDerefs();
+    flushCommands();
+    return result;
 }
 
 void IPCThreadState::stopProcess(bool immediate)
@@ -821,7 +867,7 @@ status_t IPCThreadState::talkWithDriver(bool doReceive)
     IF_LOG_COMMANDS() {
         alog << "Our err: " << (void*)err << ", write consumed: "
             << bwr.write_consumed << " (of " << mOut.dataSize()
-			<< "), read consumed: " << bwr.read_consumed << endl;
+                        << "), read consumed: " << bwr.read_consumed << endl;
     }
 
     if (err >= NO_ERROR) {
@@ -980,15 +1026,16 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                 "Not enough command data for brTRANSACTION");
             if (result != NO_ERROR) break;
             
+            const pid_t origPid = mCallingPid;
+            const uid_t origUid = mCallingUid;
+            Parcel reply;
+            {
             Parcel buffer;
             buffer.ipcSetDataReference(
                 reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
                 tr.data_size,
                 reinterpret_cast<const size_t*>(tr.data.ptr.offsets),
                 tr.offsets_size/sizeof(size_t), freeBuffer, this);
-            
-            const pid_t origPid = mCallingPid;
-            const uid_t origUid = mCallingUid;
             
             mCallingPid = tr.sender_pid;
             mCallingUid = tr.sender_euid;
@@ -1015,7 +1062,6 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
 
             //ALOGI(">>>> TRANSACT from pid %d uid %d\n", mCallingPid, mCallingUid);
             
-            Parcel reply;
             IF_LOG_TRANSACTIONS() {
                 TextOutput::Bundle _b(alog);
                 alog << "BR_TRANSACTION thr " << (void*)pthread_self()
@@ -1035,6 +1081,7 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
             } else {
                 const status_t error = the_context_object->transact(tr.code, buffer, &reply, tr.flags);
                 if (error < NO_ERROR) reply.setError(error);
+            }
             }
             
             //ALOGI("<<<< TRANSACT from pid %d restore pid %d uid %d\n",
@@ -1099,16 +1146,16 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
 
 void IPCThreadState::threadDestructor(void *st)
 {
-	IPCThreadState* const self = static_cast<IPCThreadState*>(st);
-	if (self) {
-		self->flushCommands();
+        IPCThreadState* const self = static_cast<IPCThreadState*>(st);
+        if (self) {
+                self->flushCommands();
 #if defined(HAVE_ANDROID_OS)
         if (self->mProcess->mDriverFD > 0) {
             ioctl(self->mProcess->mDriverFD, BINDER_THREAD_EXIT, 0);
         }
 #endif
-		delete self;
-	}
+                delete self;
+        }
 }
 
 

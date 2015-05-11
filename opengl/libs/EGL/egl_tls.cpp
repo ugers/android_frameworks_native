@@ -29,8 +29,8 @@
 
 namespace android {
 
-pthread_key_t egl_tls_t::sKey = -1;
-pthread_mutex_t egl_tls_t::sLockKey = PTHREAD_MUTEX_INITIALIZER;
+pthread_key_t egl_tls_t::sKey = TLS_KEY_NOT_INITIALIZED;
+pthread_once_t egl_tls_t::sOnceKey = PTHREAD_ONCE_INIT;
 
 egl_tls_t::egl_tls_t()
     : error(EGL_SUCCESS), ctx(0), logCallWithNoContext(EGL_TRUE) {
@@ -59,12 +59,12 @@ const char *egl_tls_t::egl_strerror(EGLint err) {
 
 void egl_tls_t::validateTLSKey()
 {
-    if (sKey == -1) {
-        pthread_mutex_lock(&sLockKey);
-        if (sKey == -1)
-            pthread_key_create(&sKey, NULL);
-        pthread_mutex_unlock(&sLockKey);
-    }
+    struct TlsKeyInitializer {
+        static void create() {
+            pthread_key_create(&sKey, (void (*)(void*))&eglReleaseThread);
+        }
+    };
+    pthread_once(&sOnceKey, TlsKeyInitializer::create);
 }
 
 void egl_tls_t::setErrorEtcImpl(
@@ -78,9 +78,7 @@ void egl_tls_t::setErrorEtcImpl(
             char value[PROPERTY_VALUE_MAX];
             property_get("debug.egl.callstack", value, "0");
             if (atoi(value)) {
-                CallStack stack;
-                stack.update();
-                stack.dump();
+                CallStack stack(LOG_TAG);
             }
         }
         tls->error = error;
@@ -106,11 +104,11 @@ egl_tls_t* egl_tls_t::getTLS() {
 }
 
 void egl_tls_t::clearTLS() {
-    if (sKey != -1) {
+    if (sKey != TLS_KEY_NOT_INITIALIZED) {
         egl_tls_t* tls = (egl_tls_t*)pthread_getspecific(sKey);
         if (tls) {
-            delete tls;
             pthread_setspecific(sKey, 0);
+            delete tls;
         }
     }
 }
@@ -122,10 +120,13 @@ void egl_tls_t::clearError() {
 }
 
 EGLint egl_tls_t::getError() {
-    if (sKey == -1)
+    if (sKey == TLS_KEY_NOT_INITIALIZED) {
         return EGL_SUCCESS;
+    }
     egl_tls_t* tls = (egl_tls_t*)pthread_getspecific(sKey);
-    if (!tls) return EGL_SUCCESS;
+    if (!tls) {
+        return EGL_SUCCESS;
+    }
     EGLint error = tls->error;
     tls->error = EGL_SUCCESS;
     return error;
@@ -137,8 +138,9 @@ void egl_tls_t::setContext(EGLContext ctx) {
 }
 
 EGLContext egl_tls_t::getContext() {
-    if (sKey == -1)
+    if (sKey == TLS_KEY_NOT_INITIALIZED) {
         return EGL_NO_CONTEXT;
+    }
     egl_tls_t* tls = (egl_tls_t *)pthread_getspecific(sKey);
     if (!tls) return EGL_NO_CONTEXT;
     return tls->ctx;

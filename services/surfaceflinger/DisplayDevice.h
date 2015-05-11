@@ -26,22 +26,21 @@
 #include <EGL/eglext.h>
 
 #include <utils/Mutex.h>
+#include <utils/String8.h>
 #include <utils/Timers.h>
 
 #include <hardware/hwcomposer_defs.h>
 
 #include "Transform.h"
 
-#include <ui/DisplayCommand.h>
-#include "DisplayDispatcher.h"
-
 struct ANativeWindow;
 
 namespace android {
 
 class DisplayInfo;
-class FramebufferSurface;
-class LayerBase;
+class DisplaySurface;
+class IGraphicBufferProducer;
+class Layer;
 class SurfaceFlinger;
 class HWComposer;
 
@@ -59,8 +58,8 @@ public:
         DISPLAY_ID_INVALID = -1,
         DISPLAY_PRIMARY     = HWC_DISPLAY_PRIMARY,
         DISPLAY_EXTERNAL    = HWC_DISPLAY_EXTERNAL,
-        NUM_DISPLAY_TYPES   = HWC_NUM_DISPLAY_TYPES,
-        DISPLAY_VIRTUAL     = HWC_NUM_DISPLAY_TYPES
+        DISPLAY_VIRTUAL     = HWC_DISPLAY_VIRTUAL,
+        NUM_BUILTIN_DISPLAY_TYPES = HWC_NUM_PHYSICAL_DISPLAY_TYPES,
     };
 
     enum {
@@ -68,13 +67,18 @@ public:
         SWAP_RECTANGLE  = 0x00080000,
     };
 
+    enum {
+        NO_LAYER_STACK = 0xFFFFFFFF,
+    };
+
     DisplayDevice(
             const sp<SurfaceFlinger>& flinger,
             DisplayType type,
+            int32_t hwcId,  // negative for non-HWC-composited displays
             bool isSecure,
             const wp<IBinder>& displayToken,
-            const sp<ANativeWindow>& nativeWindow,
-            const sp<FramebufferSurface>& framebufferSurface,
+            const sp<DisplaySurface>& displaySurface,
+            const sp<IGraphicBufferProducer>& producer,
             EGLConfig config);
 
     ~DisplayDevice();
@@ -98,8 +102,8 @@ public:
 
     EGLSurface  getEGLSurface() const;
 
-    void                    setVisibleLayersSortedByZ(const Vector< sp<LayerBase> >& layers);
-    const Vector< sp<LayerBase> >& getVisibleLayersSortedByZ() const;
+    void                    setVisibleLayersSortedByZ(const Vector< sp<Layer> >& layers);
+    const Vector< sp<Layer> >& getVisibleLayersSortedByZ() const;
     bool                    getSecureLayerVisible() const;
     Region                  getDirtyRegion(bool repaintEverything) const;
 
@@ -107,9 +111,11 @@ public:
     void                    setProjection(int orientation, const Rect& viewport, const Rect& frame);
 
     int                     getOrientation() const { return mOrientation; }
+    uint32_t                getOrientationTransform() const;
     const Transform&        getTransform() const { return mGlobalTransform; }
-    const Rect&             getViewport() const { return mViewport; }
-    const Rect&             getFrame() const { return mFrame; }
+    const Rect              getViewport() const { return mViewport; }
+    const Rect              getFrame() const { return mFrame; }
+    const Rect&             getScissor() const { return mScissor; }
     bool                    needsFiltering() const { return mNeedsFiltering; }
 
     uint32_t                getLayerStack() const { return mLayerStack; }
@@ -117,9 +123,12 @@ public:
     int32_t                 getHwcDisplayId() const { return mHwcDisplayId; }
     const wp<IBinder>&      getDisplayToken() const { return mDisplayToken; }
 
+    status_t beginFrame() const;
+    status_t prepareFrame(const HWComposer& hwc) const;
+
     void swapBuffers(HWComposer& hwc) const;
     status_t compositionComplete() const;
-    
+
     // called after h/w composer has completed its set() call
     void onSwapBuffersCompleted(HWComposer& hwc) const;
 
@@ -131,10 +140,8 @@ public:
     void setDisplayName(const String8& displayName);
     const String8& getDisplayName() const { return mDisplayName; }
 
-    static EGLBoolean makeCurrent(EGLDisplay dpy,
-            const sp<const DisplayDevice>& hw, EGLContext ctx);
-
-    static void setViewportAndProjection(const sp<const DisplayDevice>& hw);
+    EGLBoolean makeCurrent(EGLDisplay dpy, EGLContext ctx) const;
+    void setViewportAndProjection() const;
 
     /* ------------------------------------------------------------------------
      * blank / unblank management
@@ -144,19 +151,23 @@ public:
     bool isScreenAcquired() const;
     bool canDraw() const;
 
+    // release HWC resources (if any) for removable displays
+    void disconnect(HWComposer& hwc);
+
     /* ------------------------------------------------------------------------
      * Debugging
      */
     uint32_t getPageFlipCount() const;
-    void dump(String8& result, char* buffer, size_t SIZE) const;
+    void dump(String8& result) const;
+    int getHardwareOrientation();
 
-  sp<DisplayDispatcher>  mDisplayDispatcher;
-    int setDispProp(int cmd,int param0,int param1,int param2) const;
-    int getDispProp(int cmd,int param0,int param1) const;
-
+#ifdef QCOM_BSP
+    /* To set egl atribute, EGL_SWAP_BEHAVIOR value
+     * (EGL_BUFFER_PRESERVED/EGL_BUFFER_DESTROYED)
+     */
+    void eglSwapPreserved(bool status) const;
+#endif
 private:
-    void init(EGLConfig config);
-
     /*
      *  Constants, set during initialization
      */
@@ -167,13 +178,10 @@ private:
 
     // ANativeWindow this display is rendering into
     sp<ANativeWindow> mNativeWindow;
-
-    // set if mNativeWindow is a FramebufferSurface
-    sp<FramebufferSurface> mFramebufferSurface;
+    sp<DisplaySurface> mDisplaySurface;
 
     EGLDisplay      mDisplay;
     EGLSurface      mSurface;
-    EGLContext      mContext;
     int             mDisplayWidth;
     int             mDisplayHeight;
     PixelFormat     mFormat;
@@ -188,7 +196,7 @@ private:
      */
 
     // list of visible layers on that display
-    Vector< sp<LayerBase> > mVisibleLayersSortedByZ;
+    Vector< sp<Layer> > mVisibleLayersSortedByZ;
 
     // Whether we have a visible secure layer on this display
     bool mSecureLayerVisible;
@@ -200,15 +208,18 @@ private:
     /*
      * Transaction state
      */
-    static status_t orientationToTransfrom(int orientation,
+    status_t orientationToTransfrom(int orientation,
             int w, int h, Transform* tr);
 
-    void updateGeometryTransform();
-
     uint32_t mLayerStack;
+    int mHardwareOrientation;
     int mOrientation;
+    // user-provided visible area of the layer stack
     Rect mViewport;
+    // user-provided rectangle where mViewport gets mapped to
     Rect mFrame;
+    // pre-computed scissor to apply to the display
+    Rect mScissor;
     Transform mGlobalTransform;
     bool mNeedsFiltering;
 };

@@ -36,8 +36,7 @@ namespace android {
 
 GraphicBuffer::GraphicBuffer()
     : BASE(), mOwner(ownData), mBufferMapper(GraphicBufferMapper::get()),
-      mInitCheck(NO_ERROR), mIndex(-1)
-{
+      mInitCheck(NO_ERROR) {
     width  = 
     height = 
     stride = 
@@ -46,25 +45,24 @@ GraphicBuffer::GraphicBuffer()
     handle = NULL;
 }
 
-GraphicBuffer::GraphicBuffer(uint32_t w, uint32_t h, 
+GraphicBuffer::GraphicBuffer(uint32_t w, uint32_t h,
         PixelFormat reqFormat, uint32_t reqUsage)
     : BASE(), mOwner(ownData), mBufferMapper(GraphicBufferMapper::get()),
-      mInitCheck(NO_ERROR), mIndex(-1)
+      mInitCheck(NO_ERROR)
 {
-    width  = 
-    height = 
-    stride = 
-    format = 
+    width  =
+    height =
+    stride =
+    format =
     usage  = 0;
     handle = NULL;
     mInitCheck = initSize(w, h, reqFormat, reqUsage);
 }
 
-#ifdef QCOM_BSP
 GraphicBuffer::GraphicBuffer(uint32_t w, uint32_t h,
         PixelFormat reqFormat, uint32_t reqUsage, uint32_t bufferSize)
     : BASE(), mOwner(ownData), mBufferMapper(GraphicBufferMapper::get()),
-      mInitCheck(NO_ERROR), mIndex(-1)
+      mInitCheck(NO_ERROR)
 {
     width  =
     height =
@@ -74,14 +72,13 @@ GraphicBuffer::GraphicBuffer(uint32_t w, uint32_t h,
     handle = NULL;
     mInitCheck = initSize(w, h, reqFormat, reqUsage, bufferSize);
 }
-#endif
 
 GraphicBuffer::GraphicBuffer(uint32_t w, uint32_t h,
         PixelFormat inFormat, uint32_t inUsage,
         uint32_t inStride, native_handle_t* inHandle, bool keepOwnership)
     : BASE(), mOwner(keepOwnership ? ownHandle : ownNone),
       mBufferMapper(GraphicBufferMapper::get()),
-      mInitCheck(NO_ERROR), mIndex(-1)
+      mInitCheck(NO_ERROR)
 {
     width  = w;
     height = h;
@@ -94,7 +91,7 @@ GraphicBuffer::GraphicBuffer(uint32_t w, uint32_t h,
 GraphicBuffer::GraphicBuffer(ANativeWindowBuffer* buffer, bool keepOwnership)
     : BASE(), mOwner(keepOwnership ? ownHandle : ownNone),
       mBufferMapper(GraphicBufferMapper::get()),
-      mInitCheck(NO_ERROR), mIndex(-1), mWrappedBuffer(buffer)
+      mInitCheck(NO_ERROR), mWrappedBuffer(buffer)
 {
     width  = buffer->width;
     height = buffer->height;
@@ -170,7 +167,6 @@ status_t GraphicBuffer::initSize(uint32_t w, uint32_t h, PixelFormat format,
     return err;
 }
 
-#ifdef QCOM_BSP
 status_t GraphicBuffer::initSize(uint32_t w, uint32_t h, PixelFormat format,
                                  uint32_t reqUsage, uint32_t bufferSize)
 {
@@ -185,7 +181,6 @@ status_t GraphicBuffer::initSize(uint32_t w, uint32_t h, PixelFormat format,
     }
     return err;
 }
-#endif
 
 status_t GraphicBuffer::lock(uint32_t usage, void** vaddr)
 {
@@ -196,14 +191,35 @@ status_t GraphicBuffer::lock(uint32_t usage, void** vaddr)
 
 status_t GraphicBuffer::lock(uint32_t usage, const Rect& rect, void** vaddr)
 {
-    if (rect.left < 0 || rect.right  > this->width || 
+    if (rect.left < 0 || rect.right  > this->width ||
         rect.top  < 0 || rect.bottom > this->height) {
         ALOGE("locking pixels (%d,%d,%d,%d) outside of buffer (w=%d, h=%d)",
-                rect.left, rect.top, rect.right, rect.bottom, 
+                rect.left, rect.top, rect.right, rect.bottom,
                 this->width, this->height);
         return BAD_VALUE;
     }
     status_t res = getBufferMapper().lock(handle, usage, rect, vaddr);
+    return res;
+}
+
+status_t GraphicBuffer::lockYCbCr(uint32_t usage, android_ycbcr *ycbcr)
+{
+    const Rect lockBounds(width, height);
+    status_t res = lockYCbCr(usage, lockBounds, ycbcr);
+    return res;
+}
+
+status_t GraphicBuffer::lockYCbCr(uint32_t usage, const Rect& rect,
+        android_ycbcr *ycbcr)
+{
+    if (rect.left < 0 || rect.right  > this->width ||
+        rect.top  < 0 || rect.bottom > this->height) {
+        ALOGE("locking pixels (%d,%d,%d,%d) outside of buffer (w=%d, h=%d)",
+                rect.left, rect.top, rect.right, rect.bottom,
+                this->width, this->height);
+        return BAD_VALUE;
+    }
+    status_t res = getBufferMapper().lockYCbCr(handle, usage, rect, ycbcr);
     return res;
 }
 
@@ -213,16 +229,6 @@ status_t GraphicBuffer::unlock()
     return res;
 }
 
-#ifdef QCOM_BSP
-status_t GraphicBuffer::perform(buffer_handle_t hnd, int operation,
-                                uint32_t w, uint32_t h, PixelFormat format)
-{
-    status_t res = getBufferMapper().perform(hnd,
-                   GRALLOC_MODULE_PERFORM_UPDATE_BUFFER_GEOMETRY, w, h, format);
-    return res;
-}
-#endif
-
 size_t GraphicBuffer::getFlattenedSize() const {
     return (8 + (handle ? handle->numInts : 0))*sizeof(int);
 }
@@ -231,9 +237,7 @@ size_t GraphicBuffer::getFdCount() const {
     return handle ? handle->numFds : 0;
 }
 
-status_t GraphicBuffer::flatten(void* buffer, size_t size,
-        int fds[], size_t count) const
-{
+status_t GraphicBuffer::flatten(void*& buffer, size_t& size, int*& fds, size_t& count) const {
     size_t sizeNeeded = GraphicBuffer::getFlattenedSize();
     if (size < sizeNeeded) return NO_MEMORY;
 
@@ -256,14 +260,18 @@ status_t GraphicBuffer::flatten(void* buffer, size_t size,
         native_handle_t const* const h = handle;
         memcpy(fds,     h->data,             h->numFds*sizeof(int));
         memcpy(&buf[8], h->data + h->numFds, h->numInts*sizeof(int));
+        fds += handle->numFds;
+        count -= handle->numFds;
     }
+
+    buffer = reinterpret_cast<void*>(static_cast<int*>(buffer) + sizeNeeded);
+    size -= sizeNeeded;
 
     return NO_ERROR;
 }
 
-status_t GraphicBuffer::unflatten(void const* buffer, size_t size,
-        int fds[], size_t count)
-{
+status_t GraphicBuffer::unflatten(
+        void const*& buffer, size_t& size, int const*& fds, size_t& count) {
     if (size < 8*sizeof(int)) return NO_MEMORY;
 
     int const* buf = static_cast<int const*>(buffer);
@@ -303,22 +311,20 @@ status_t GraphicBuffer::unflatten(void const* buffer, size_t size,
     if (handle != 0) {
         status_t err = mBufferMapper.registerBuffer(handle);
         if (err != NO_ERROR) {
+            width = height = stride = format = usage = 0;
+            handle = NULL;
             ALOGE("unflatten: registerBuffer failed: %s (%d)",
                     strerror(-err), err);
             return err;
         }
     }
 
+    buffer = reinterpret_cast<void const*>(static_cast<int const*>(buffer) + sizeNeeded);
+    size -= sizeNeeded;
+    fds += numFds;
+    count -= numFds;
+
     return NO_ERROR;
-}
-
-
-void GraphicBuffer::setIndex(int index) {
-    mIndex = index;
-}
-
-int GraphicBuffer::getIndex() const {
-    return mIndex;
 }
 
 // ---------------------------------------------------------------------------

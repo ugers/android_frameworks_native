@@ -28,6 +28,7 @@ SensorFusion::SensorFusion()
       mEnabled(false), mGyroTime(0)
 {
     sensor_t const* list;
+    Sensor uncalibratedGyro;
     ssize_t count = mSensorDevice.getSensorList(&list);
     if (count > 0) {
         for (size_t i=0 ; i<size_t(count) ; i++) {
@@ -39,28 +40,38 @@ SensorFusion::SensorFusion()
             }
             if (list[i].type == SENSOR_TYPE_GYROSCOPE) {
                 mGyro = Sensor(list + i);
-                // 200 Hz for gyro events is a good compromise between precision
-                // and power/cpu usage.
-                mGyroRate = 200;
-                mTargetDelayNs = 1000000000LL/mGyroRate;
+            }
+            if (list[i].type == SENSOR_TYPE_GYROSCOPE_UNCALIBRATED) {
+                uncalibratedGyro = Sensor(list + i);
             }
         }
+
+        // Use the uncalibrated gyroscope for sensor fusion when available
+        if (uncalibratedGyro.getType() == SENSOR_TYPE_GYROSCOPE_UNCALIBRATED) {
+            mGyro = uncalibratedGyro;
+        }
+
+        // 200 Hz for gyro events is a good compromise between precision
+        // and power/cpu usage.
+        mEstimatedGyroRate = 200;
+        mTargetDelayNs = 1000000000LL/mEstimatedGyroRate;
         mFusion.init();
     }
 }
 
 void SensorFusion::process(const sensors_event_t& event) {
-    if (event.type == SENSOR_TYPE_GYROSCOPE) {
+    if (event.type == mGyro.getType()) {
         if (mGyroTime != 0) {
             const float dT = (event.timestamp - mGyroTime) / 1000000000.0f;
+            mFusion.handleGyro(vec3_t(event.data), dT);
+            // here we estimate the gyro rate (useful for debugging)
             const float freq = 1 / dT;
             if (freq >= 100 && freq<1000) { // filter values obviously wrong
                 const float alpha = 1 / (1 + dT); // 1s time-constant
-                mGyroRate = freq + (mGyroRate - freq)*alpha;
+                mEstimatedGyroRate = freq + (mEstimatedGyroRate - freq)*alpha;
             }
         }
         mGyroTime = event.timestamp;
-        mFusion.handleGyro(vec3_t(event.data), 1.0f/mGyroRate);
     } else if (event.type == SENSOR_TYPE_MAGNETIC_FIELD) {
         const vec3_t mag(event.data);
         mFusion.handleMag(mag);
@@ -107,9 +118,10 @@ status_t SensorFusion::activate(void* ident, bool enabled) {
 }
 
 status_t SensorFusion::setDelay(void* ident, int64_t ns) {
-    mSensorDevice.setDelay(ident, mAcc.getHandle(), ns);
-    mSensorDevice.setDelay(ident, mMag.getHandle(), ms2ns(20));
-    mSensorDevice.setDelay(ident, mGyro.getHandle(), mTargetDelayNs);
+    // Call batch with timeout zero instead of setDelay().
+    mSensorDevice.batch(ident, mAcc.getHandle(), 0, ns, 0);
+    mSensorDevice.batch(ident, mMag.getHandle(), 0, ms2ns(20), 0);
+    mSensorDevice.batch(ident, mGyro.getHandle(), 0, mTargetDelayNs, 0);
     return NO_ERROR;
 }
 
@@ -125,14 +137,14 @@ int32_t SensorFusion::getMinDelay() const {
     return mAcc.getMinDelay();
 }
 
-void SensorFusion::dump(String8& result, char* buffer, size_t SIZE) {
+void SensorFusion::dump(String8& result) {
     const Fusion& fusion(mFusion);
-    snprintf(buffer, SIZE, "9-axis fusion %s (%d clients), gyro-rate=%7.2fHz, "
+    result.appendFormat("9-axis fusion %s (%d clients), gyro-rate=%7.2fHz, "
             "q=< %g, %g, %g, %g > (%g), "
             "b=< %g, %g, %g >\n",
             mEnabled ? "enabled" : "disabled",
             mClients.size(),
-            mGyroRate,
+            mEstimatedGyroRate,
             fusion.getAttitude().x,
             fusion.getAttitude().y,
             fusion.getAttitude().z,
@@ -141,7 +153,6 @@ void SensorFusion::dump(String8& result, char* buffer, size_t SIZE) {
             fusion.getBias().x,
             fusion.getBias().y,
             fusion.getBias().z);
-    result.append(buffer);
 }
 
 // ---------------------------------------------------------------------------

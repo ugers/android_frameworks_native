@@ -21,6 +21,7 @@
 #include <sys/types.h>
 
 #include <binder/IBinder.h>
+#include <binder/IMemory.h>
 
 #include <utils/RefBase.h>
 #include <utils/Singleton.h>
@@ -29,8 +30,8 @@
 
 #include <ui/PixelFormat.h>
 
-#include <gui/Surface.h>
-#include <gui/ISurfaceClient.h>
+#include <gui/CpuConsumer.h>
+#include <gui/SurfaceControl.h>
 
 namespace android {
 
@@ -38,9 +39,11 @@ namespace android {
 
 class DisplayInfo;
 class Composer;
+#ifdef USE_MHEAP_SCREENSHOT
 class IMemoryHeap;
+#endif
 class ISurfaceComposerClient;
-class ISurfaceTexture;
+class IGraphicBufferProducer;
 class Region;
 
 // ---------------------------------------------------------------------------
@@ -48,7 +51,7 @@ class Region;
 class SurfaceComposerClient : public RefBase
 {
     friend class Composer;
-public:    
+public:
                 SurfaceComposerClient();
     virtual     ~SurfaceComposerClient();
 
@@ -57,7 +60,7 @@ public:
 
     // Return the connection of this client
     sp<IBinder> connection() const;
-    
+
     // Forcibly remove connection before all references have gone away.
     void        dispose();
 
@@ -76,13 +79,13 @@ public:
     // TODO: Remove me.  Do not use.
     // This is a compatibility shim for one product whose drivers are depending on
     // this legacy function (when they shouldn't).
-    //static status_t getDisplayInfo(int32_t displayId, DisplayInfo* info);
+    static status_t getDisplayInfo(int32_t displayId, DisplayInfo* info);
 
-//#if defined(ICS_CAMERA_BLOB) || defined(MR0_CAMERA_BLOB)
-    //static ssize_t getDisplayWidth(int32_t displayId);
-    //static ssize_t getDisplayHeight(int32_t displayId);
-    //static ssize_t getDisplayOrientation(int32_t displayId);
-//#endif
+#if defined(ICS_CAMERA_BLOB) || defined(MR0_CAMERA_BLOB)
+    static ssize_t getDisplayWidth(int32_t displayId);
+    static ssize_t getDisplayHeight(int32_t displayId);
+    static ssize_t getDisplayOrientation(int32_t displayId);
+#endif
 
     // ------------------------------------------------------------------------
     // surface creation / destruction
@@ -96,8 +99,11 @@ public:
             uint32_t flags = 0  // usage flags
     );
 
-    //! Create a display
+    //! Create a virtual display
     static sp<IBinder> createDisplay(const String8& displayName, bool secure);
+
+    //! Destroy a virtual display
+    static void destroyDisplay(const sp<IBinder>& display);
 
     //! Get the token for the existing default displays.
     //! Possible values for id are eDisplayIdMain and eDisplayIdHdmi.
@@ -116,26 +122,26 @@ public:
     //! Close a composer transaction on all active SurfaceComposerClients.
     static void closeGlobalTransaction(bool synchronous = false);
 
-    //static int setOrientation(int32_t dpy, int orientation, uint32_t flags);
+    static int setOrientation(int32_t dpy, int orientation, uint32_t flags);
 
     //! Flag the currently open transaction as an animation transaction.
     static void setAnimationTransaction();
 
-    status_t    hide(SurfaceID id);
-    status_t    show(SurfaceID id);
-    status_t    setFlags(SurfaceID id, uint32_t flags, uint32_t mask);
-    status_t    setTransparentRegionHint(SurfaceID id, const Region& transparent);
-    status_t    setLayer(SurfaceID id, int32_t layer);
-    status_t    setAlpha(SurfaceID id, float alpha=1.0f);
-    status_t    setMatrix(SurfaceID id, float dsdx, float dtdx, float dsdy, float dtdy);
-    status_t    setPosition(SurfaceID id, float x, float y);
-    status_t    setSize(SurfaceID id, uint32_t w, uint32_t h);
-    status_t    setCrop(SurfaceID id, const Rect& crop);
-    status_t    setLayerStack(SurfaceID id, uint32_t layerStack);
-    status_t    destroySurface(SurfaceID sid);
+    status_t    hide(const sp<IBinder>& id);
+    status_t    show(const sp<IBinder>& id);
+    status_t    setFlags(const sp<IBinder>& id, uint32_t flags, uint32_t mask);
+    status_t    setTransparentRegionHint(const sp<IBinder>& id, const Region& transparent);
+    status_t    setLayer(const sp<IBinder>& id, int32_t layer);
+    status_t    setAlpha(const sp<IBinder>& id, float alpha=1.0f);
+    status_t    setMatrix(const sp<IBinder>& id, float dsdx, float dtdx, float dsdy, float dtdy);
+    status_t    setPosition(const sp<IBinder>& id, float x, float y);
+    status_t    setSize(const sp<IBinder>& id, uint32_t w, uint32_t h);
+    status_t    setCrop(const sp<IBinder>& id, const Rect& crop);
+    status_t    setLayerStack(const sp<IBinder>& id, uint32_t layerStack);
+    status_t    destroySurface(const sp<IBinder>& id);
 
     static void setDisplaySurface(const sp<IBinder>& token,
-            const sp<ISurfaceTexture>& surface);
+            const sp<IGraphicBufferProducer>& bufferProducer);
     static void setDisplayLayerStack(const sp<IBinder>& token,
             uint32_t layerStack);
 
@@ -154,11 +160,6 @@ public:
             const Rect& layerStackRect,
             const Rect& displayRect);
 
-  static int  setDisplayProp(int cmd,int param0,int param1,int param2);
-  static int  getDisplayProp(int cmd,int param0,int param1);
-  static void    registerSurfaceClient(const sp<ISurfaceClient>& client);
-  static void    unregisterSurfaceClient();
-
 private:
     virtual void onFirstRef();
     Composer& getComposer();
@@ -173,17 +174,29 @@ private:
 
 class ScreenshotClient
 {
+public:
+    static status_t capture(
+            const sp<IBinder>& display,
+            const sp<IGraphicBufferProducer>& producer,
+            uint32_t reqWidth, uint32_t reqHeight,
+            uint32_t minLayerZ, uint32_t maxLayerZ);
+
+private:
+#ifdef USE_MHEAP_SCREENSHOT
     sp<IMemoryHeap> mHeap;
-    uint32_t mWidth;
-    uint32_t mHeight;
-    PixelFormat mFormat;
+#endif
+    mutable sp<CpuConsumer> mCpuConsumer;
+    mutable sp<BufferQueue> mBufferQueue;
+    CpuConsumer::LockedBuffer mBuffer;
+    bool mHaveBuffer;
+
 public:
     ScreenshotClient();
+    ~ScreenshotClient();
 
-    // TODO: Remove me.  Do not use.
-    // This is a compatibility shim for one product whose drivers are depending on
-    // this legacy function (when they shouldn't).
-    //status_t update();
+#if defined(TOROPLUS_RADIO)
+    status_t update();
+#endif
 
     // frees the previous screenshot and capture a new one
     status_t update(const sp<IBinder>& display);
@@ -192,6 +205,8 @@ public:
     status_t update(const sp<IBinder>& display,
             uint32_t reqWidth, uint32_t reqHeight,
             uint32_t minLayerZ, uint32_t maxLayerZ);
+
+    sp<CpuConsumer> getCpuConsumer() const;
 
     // release memory occupied by the screenshot
     void release();

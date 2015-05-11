@@ -24,6 +24,7 @@
 #include <ui/PixelFormat.h>
 #include <ui/Rect.h>
 #include <utils/Flattenable.h>
+#include <utils/RefBase.h>
 
 
 struct ANativeWindowBuffer;
@@ -37,11 +38,10 @@ class GraphicBufferMapper;
 // ===========================================================================
 
 class GraphicBuffer
-    : public ANativeObjectBase<
-        ANativeWindowBuffer,
-        GraphicBuffer, 
-        LightRefBase<GraphicBuffer> >, public Flattenable
+    : public ANativeObjectBase< ANativeWindowBuffer, GraphicBuffer, RefBase >,
+      public Flattenable<GraphicBuffer>
 {
+    friend class Flattenable<GraphicBuffer>;
 public:
 
     enum {
@@ -49,7 +49,7 @@ public:
         USAGE_SW_READ_RARELY    = GRALLOC_USAGE_SW_READ_RARELY,
         USAGE_SW_READ_OFTEN     = GRALLOC_USAGE_SW_READ_OFTEN,
         USAGE_SW_READ_MASK      = GRALLOC_USAGE_SW_READ_MASK,
-        
+
         USAGE_SW_WRITE_NEVER    = GRALLOC_USAGE_SW_WRITE_NEVER,
         USAGE_SW_WRITE_RARELY   = GRALLOC_USAGE_SW_WRITE_RARELY,
         USAGE_SW_WRITE_OFTEN    = GRALLOC_USAGE_SW_WRITE_OFTEN,
@@ -72,11 +72,9 @@ public:
 
     GraphicBuffer();
 
-#ifdef QCOM_BSP
     // creates buffer of bufferSize
     GraphicBuffer(uint32_t w, uint32_t h,
                   PixelFormat format, uint32_t usage, uint32_t bufferSize);
-#endif
 
     // creates w * h buffer
     GraphicBuffer(uint32_t w, uint32_t h, PixelFormat format, uint32_t usage);
@@ -97,27 +95,29 @@ public:
     uint32_t getUsage() const           { return usage; }
     PixelFormat getPixelFormat() const  { return format; }
     Rect getBounds() const              { return Rect(width, height); }
-    
+
     status_t reallocate(uint32_t w, uint32_t h, PixelFormat f, uint32_t usage);
 
     status_t lock(uint32_t usage, void** vaddr);
     status_t lock(uint32_t usage, const Rect& rect, void** vaddr);
+    // For HAL_PIXEL_FORMAT_YCbCr_420_888
+    status_t lockYCbCr(uint32_t usage, android_ycbcr *ycbcr);
+    status_t lockYCbCr(uint32_t usage, const Rect& rect, android_ycbcr *ycbcr);
     status_t unlock();
-#ifdef QCOM_BSP
-    status_t perform(buffer_handle_t hnd, int operation,
-                     uint32_t w, uint32_t h, PixelFormat format);
-#endif
 
     ANativeWindowBuffer* getNativeBuffer() const;
-    
-    void setIndex(int index);
-    int getIndex() const;
 
     // for debugging
     static void dumpAllocationsToSystemLog();
 
+    // Flattenable protocol
+    size_t getFlattenedSize() const;
+    size_t getFdCount() const;
+    status_t flatten(void*& buffer, size_t& size, int*& fds, size_t& count) const;
+    status_t unflatten(void const*& buffer, size_t& size, int const*& fds, size_t& count);
+
 private:
-    virtual ~GraphicBuffer();
+    ~GraphicBuffer();
 
     enum {
         ownNone   = 0,
@@ -137,7 +137,6 @@ private:
     friend class Surface;
     friend class BpSurface;
     friend class BnSurface;
-    friend class SurfaceTextureClient;
     friend class LightRefBase<GraphicBuffer>;
     GraphicBuffer(const GraphicBuffer& rhs);
     GraphicBuffer& operator = (const GraphicBuffer& rhs);
@@ -145,24 +144,13 @@ private:
 
     status_t initSize(uint32_t w, uint32_t h, PixelFormat format,
             uint32_t usage);
-#ifdef QCOM_BSP
     status_t initSize(uint32_t w, uint32_t h, PixelFormat format,
             uint32_t usage, uint32_t bufferSize);
-#endif
+
     void free_handle();
-
-    // Flattenable interface
-    size_t getFlattenedSize() const;
-    size_t getFdCount() const;
-    status_t flatten(void* buffer, size_t size,
-            int fds[], size_t count) const;
-    status_t unflatten(void const* buffer, size_t size,
-            int fds[], size_t count);
-
 
     GraphicBufferMapper& mBufferMapper;
     ssize_t mInitCheck;
-    int mIndex;
 
     // If we're wrapping another buffer then this reference will make sure it
     // doesn't get freed.

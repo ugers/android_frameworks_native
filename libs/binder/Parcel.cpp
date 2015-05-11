@@ -22,18 +22,20 @@
 #include <binder/IPCThreadState.h>
 #include <binder/Binder.h>
 #include <binder/BpBinder.h>
-#include <utils/Debug.h>
 #include <binder/ProcessState.h>
+#include <binder/TextOutput.h>
+
+#include <utils/Debug.h>
 #include <utils/Log.h>
 #include <utils/String8.h>
 #include <utils/String16.h>
-#include <utils/TextOutput.h>
 #include <utils/misc.h>
 #include <utils/Flattenable.h>
 #include <cutils/ashmem.h>
 
 #include <private/binder/binder_module.h>
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -616,6 +618,26 @@ status_t Parcel::writeInt32(int32_t val)
 {
     return writeAligned(val);
 }
+status_t Parcel::writeInt32Array(size_t len, const int32_t *val) {
+    if (!val) {
+        return writeAligned(-1);
+    }
+    status_t ret = writeAligned(len);
+    if (ret == NO_ERROR) {
+        ret = write(val, len * sizeof(*val));
+    }
+    return ret;
+}
+status_t Parcel::writeByteArray(size_t len, const uint8_t *val) {
+    if (!val) {
+        return writeAligned(-1);
+    }
+    status_t ret = writeAligned(len);
+    if (ret == NO_ERROR) {
+        ret = write(val, len * sizeof(*val));
+    }
+    return ret;
+}
 
 status_t Parcel::writeInt64(int64_t val)
 {
@@ -627,10 +649,26 @@ status_t Parcel::writeFloat(float val)
     return writeAligned(val);
 }
 
+#if defined(__mips__) && defined(__mips_hard_float)
+
+status_t Parcel::writeDouble(double val)
+{
+    union {
+        double d;
+        unsigned long long ll;
+    } u;
+    u.d = val;
+    return writeAligned(u.ll);
+}
+
+#else
+
 status_t Parcel::writeDouble(double val)
 {
     return writeAligned(val);
 }
+
+#endif
 
 status_t Parcel::writeIntPtr(intptr_t val)
 {
@@ -781,13 +819,13 @@ status_t Parcel::writeBlob(size_t len, WritableBlob* outBlob)
     return status;
 }
 
-status_t Parcel::write(const Flattenable& val)
+status_t Parcel::write(const FlattenableHelperInterface& val)
 {
     status_t err;
 
     // size if needed
-    size_t len = val.getFlattenedSize();
-    size_t fd_count = val.getFdCount();
+    const size_t len = val.getFlattenedSize();
+    const size_t fd_count = val.getFdCount();
 
     err = this->writeInt32(len);
     if (err) return err;
@@ -796,7 +834,7 @@ status_t Parcel::write(const Flattenable& val)
     if (err) return err;
 
     // payload
-    void* buf = this->writeInplace(PAD_SIZE(len));
+    void* const buf = this->writeInplace(PAD_SIZE(len));
     if (buf == NULL)
         return BAD_VALUE;
 
@@ -870,7 +908,8 @@ void Parcel::remove(size_t start, size_t amt)
 
 status_t Parcel::read(void* outData, size_t len) const
 {
-    if ((mDataPos+PAD_SIZE(len)) >= mDataPos && (mDataPos+PAD_SIZE(len)) <= mDataSize) {
+    if ((mDataPos+PAD_SIZE(len)) >= mDataPos && (mDataPos+PAD_SIZE(len)) <= mDataSize
+            && len <= PAD_SIZE(len)) {
         memcpy(outData, mData+mDataPos, len);
         mDataPos += PAD_SIZE(len);
         ALOGV("read Setting data pos of %p to %d\n", this, mDataPos);
@@ -881,7 +920,8 @@ status_t Parcel::read(void* outData, size_t len) const
 
 const void* Parcel::readInplace(size_t len) const
 {
-    if ((mDataPos+PAD_SIZE(len)) >= mDataPos && (mDataPos+PAD_SIZE(len)) <= mDataSize) {
+    if ((mDataPos+PAD_SIZE(len)) >= mDataPos && (mDataPos+PAD_SIZE(len)) <= mDataSize
+            && len <= PAD_SIZE(len)) {
         const void* data = mData+mDataPos;
         mDataPos += PAD_SIZE(len);
         ALOGV("readInplace Setting data pos of %p to %d\n", this, mDataPos);
@@ -962,16 +1002,43 @@ float Parcel::readFloat() const
     return readAligned<float>();
 }
 
+#if defined(__mips__) && defined(__mips_hard_float)
+
+status_t Parcel::readDouble(double *pArg) const
+{
+    union {
+      double d;
+      unsigned long long ll;
+    } u;
+    status_t status;
+    status = readAligned(&u.ll);
+    *pArg = u.d;
+    return status;
+}
+
+double Parcel::readDouble() const
+{
+    union {
+      double d;
+      unsigned long long ll;
+    } u;
+    u.ll = readAligned<unsigned long long>();
+    return u.d;
+}
+
+#else
+
 status_t Parcel::readDouble(double *pArg) const
 {
     return readAligned(pArg);
 }
 
-
 double Parcel::readDouble() const
 {
     return readAligned<double>();
 }
+
+#endif
 
 status_t Parcel::readIntPtr(intptr_t *pArg) const
 {
@@ -1130,14 +1197,14 @@ status_t Parcel::readBlob(size_t len, ReadableBlob* outBlob) const
     return NO_ERROR;
 }
 
-status_t Parcel::read(Flattenable& val) const
+status_t Parcel::read(FlattenableHelperInterface& val) const
 {
     // size
     const size_t len = this->readInt32();
     const size_t fd_count = this->readInt32();
 
     // payload
-    void const* buf = this->readInplace(PAD_SIZE(len));
+    void const* const buf = this->readInplace(PAD_SIZE(len));
     if (buf == NULL)
         return BAD_VALUE;
 
@@ -1263,6 +1330,7 @@ size_t Parcel::ipcObjectsCount() const
 void Parcel::ipcSetDataReference(const uint8_t* data, size_t dataSize,
     const size_t* objects, size_t objectsCount, release_func relFunc, void* relCookie)
 {
+    size_t minOffset = 0;
     freeDataNoInit();
     mError = NO_ERROR;
     mData = const_cast<uint8_t*>(data);
@@ -1275,6 +1343,16 @@ void Parcel::ipcSetDataReference(const uint8_t* data, size_t dataSize,
     mNextObjectHint = 0;
     mOwner = relFunc;
     mOwnerCookie = relCookie;
+    for (size_t i = 0; i < mObjectsSize; i++) {
+        size_t offset = mObjects[i];
+        if (offset < minOffset) {
+            ALOGE("%s: bad object offset %zu < %zu\n",
+                  __func__, offset, minOffset);
+            mObjectsSize = 0;
+            break;
+        }
+        minOffset = offset + sizeof(flat_binder_object);
+    }
     scanForFds();
 }
 

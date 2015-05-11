@@ -21,15 +21,18 @@
 #include <sys/types.h>
 
 #include <hardware/hwcomposer_defs.h>
-#include <hardware/hwcomposer.h>
 
+#include <ui/Fence.h>
+
+#include <utils/BitSet.h>
 #include <utils/Condition.h>
 #include <utils/Mutex.h>
 #include <utils/StrongPointer.h>
 #include <utils/Thread.h>
 #include <utils/Timers.h>
 #include <utils/Vector.h>
-#include <utils/BitSet.h>
+
+#define MAX_LAYER_COUNT 32
 
 extern "C" int clock_nanosleep(clockid_t clock_id, int flags,
                            const struct timespec *request,
@@ -46,7 +49,7 @@ namespace android {
 
 class GraphicBuffer;
 class Fence;
-class LayerBase;
+class FloatRect;
 class Region;
 class String8;
 class SurfaceFlinger;
@@ -63,7 +66,9 @@ public:
     };
 
     enum {
-        MAX_DISPLAYS = HWC_NUM_DISPLAY_TYPES + 1
+        NUM_BUILTIN_DISPLAYS = HWC_NUM_PHYSICAL_DISPLAY_TYPES,
+        MAX_HWC_DISPLAYS = HWC_NUM_DISPLAY_TYPES,
+        VIRTUAL_DISPLAY_ID_BASE = HWC_DISPLAY_VIRTUAL,
     };
 
     HWComposer(
@@ -74,15 +79,16 @@ public:
 
     status_t initCheck() const;
 
-    // returns a display ID starting at MAX_DISPLAYS, this ID
-    // is to be used with createWorkList (and all other
-    // methods requiring an ID below).
-    // IDs below MAX_DISPLAY are pre-defined and therefore are always valid.
-    // returns a negative error code if an ID cannot be allocated
+    // Returns a display ID starting at VIRTUAL_DISPLAY_ID_BASE, this ID is to
+    // be used with createWorkList (and all other methods requiring an ID
+    // below).
+    // IDs below NUM_BUILTIN_DISPLAYS are pre-defined and therefore are
+    // always valid.
+    // Returns -1 if an ID cannot be allocated
     int32_t allocateDisplayId();
 
-    // recycles the given ID and frees the associated worklist.
-    // IDs below MAX_DISPLAYS are not recycled
+    // Recycles the given virtual display ID and frees the associated worklist.
+    // IDs below NUM_BUILTIN_DISPLAYS are not recycled.
     status_t freeDisplayId(int32_t id);
 
 
@@ -112,9 +118,20 @@ public:
     // does this display have layers handled by GLES
     bool hasGlesComposition(int32_t id) const;
 
-    // get the releaseFence file descriptor for the given display
+#ifdef QCOM_BSP
+    // does this display have layers handled by BLIT HW
+    bool hasBlitComposition(int32_t id) const;
+
+    //GPUTiledRect : function to find out if DR can be used in GPU Comp.
+    bool canUseTiledDR(int32_t id, Rect& dr);
+#endif
+
+    // get the releaseFence file descriptor for a display's framebuffer layer.
     // the release fence is only valid after commit()
-    int getAndResetReleaseFenceFd(int32_t id);
+    sp<Fence> getAndResetReleaseFence(int32_t id);
+
+    // is VDS solution enabled
+    inline bool isVDSEnabled() const { return mVDSEnabled; };
 
     // needed forward declarations
     class LayerListIterator;
@@ -128,8 +145,16 @@ public:
     int fbCompositionComplete();
     void fbDump(String8& result);
 
-  int setParameter(uint32_t cmd,uint32_t value);
-    uint32_t getParameter(uint32_t cmd);
+    // Set the output buffer and acquire fence for a virtual display.
+    // Returns INVALID_OPERATION if id is not a virtual display.
+    status_t setOutputBuffer(int32_t id, const sp<Fence>& acquireFence,
+            const sp<GraphicBuffer>& buf);
+
+    // Get the retire fence for the last committed frame. This fence will
+    // signal when the h/w composer is completely finished with the frame.
+    // For physical displays, it is no longer being displayed. For virtual
+    // displays, writes to the output buffer are complete.
+    sp<Fence> getLastRetireFence(int32_t id);
 
     /*
      * Interface to hardware composer's layers functionality.
@@ -144,19 +169,22 @@ public:
     public:
         virtual int32_t getCompositionType() const = 0;
         virtual uint32_t getHints() const = 0;
-        virtual int getAndResetReleaseFenceFd() = 0;
-        virtual void setPerFrameDefaultState() = 0;
+        virtual sp<Fence> getAndResetReleaseFence() = 0;
         virtual void setDefaultState() = 0;
         virtual void setSkip(bool skip) = 0;
+        virtual void setAnimating(bool animating) = 0;
         virtual void setBlending(uint32_t blending) = 0;
         virtual void setTransform(uint32_t transform) = 0;
         virtual void setFrame(const Rect& frame) = 0;
-        virtual void setCrop(const Rect& crop) = 0;
+        virtual void setCrop(const FloatRect& crop) = 0;
         virtual void setVisibleRegionScreen(const Region& reg) = 0;
+#ifdef QCOM_BSP
+        virtual void setDirtyRect(const Rect& dirtyRect) = 0;
+#endif
         virtual void setBuffer(const sp<GraphicBuffer>& buffer) = 0;
         virtual void setAcquireFenceFd(int fenceFd) = 0;
+        virtual void setPlaneAlpha(uint8_t alpha) = 0;
         virtual void onDisplayed() = 0;
-        virtual void setFormat(uint32_t format) = 0;
     };
 
     /*
@@ -229,7 +257,8 @@ public:
     // Events handling ---------------------------------------------------------
 
     enum {
-        EVENT_VSYNC = HWC_EVENT_VSYNC
+        EVENT_VSYNC = HWC_EVENT_VSYNC,
+        EVENT_ORIENTATION = HWC_EVENT_ORIENTATION
     };
 
     void eventControl(int disp, int event, int enabled);
@@ -238,12 +267,16 @@ public:
     // HWC_DISPLAY_PRIMARY).
     nsecs_t getRefreshPeriod(int disp) const;
     nsecs_t getRefreshTimestamp(int disp) const;
+    sp<Fence> getDisplayFence(int disp) const;
     uint32_t getWidth(int disp) const;
     uint32_t getHeight(int disp) const;
     uint32_t getFormat(int disp) const;
     float getDpiX(int disp) const;
     float getDpiY(int disp) const;
     bool isConnected(int disp) const;
+
+    status_t setVirtualDisplayProperties(int32_t id, uint32_t w, uint32_t h,
+            uint32_t format);
 
     // this class is only used to fake the VSync event on systems that don't
     // have it.
@@ -264,11 +297,11 @@ public:
     friend class VSyncThread;
 
     // for debugging ----------------------------------------------------------
-    void dump(String8& out, char* scratch, size_t SIZE) const;
+    void dump(String8& out) const;
 
 private:
     void loadHwcModule();
-    void loadFbHalModule();
+    int loadFbHalModule();
 
     LayerListIterator getLayerIterator(int32_t id, size_t index);
 
@@ -291,13 +324,8 @@ private:
 
 
     struct DisplayData {
-        DisplayData() : xdpi(0), ydpi(0), refresh(0),
-            connected(false), hasFbComp(false), hasOvComp(false),
-            capacity(0), list(NULL),
-            framebufferTarget(NULL), fbTargetHandle(NULL), events(0) { }
-        ~DisplayData() {
-            free(list);
-        }
+        DisplayData();
+        ~DisplayData();
         uint32_t width;
         uint32_t height;
         uint32_t format;    // pixel format from FB hal, for pre-hwc-1.1
@@ -307,10 +335,19 @@ private:
         bool connected;
         bool hasFbComp;
         bool hasOvComp;
+#ifdef QCOM_BSP
+        bool hasBlitComp;
+#endif
         size_t capacity;
         hwc_display_contents_1* list;
         hwc_layer_1* framebufferTarget;
         buffer_handle_t fbTargetHandle;
+        sp<Fence> lastRetireFence;  // signals when the last set op retires
+        sp<Fence> lastDisplayFence; // signals when the last set op takes
+                                    // effect on screen
+        buffer_handle_t outbufHandle;
+        sp<Fence> outbufAcquireFence;
+
         // protected by mEventControlLock
         int32_t events;
     };
@@ -320,23 +357,72 @@ private:
     struct hwc_composer_device_1*   mHwc;
     // invariant: mLists[0] != NULL iff mHwc != NULL
     // mLists[i>0] can be NULL. that display is to be ignored
-    struct hwc_display_contents_1*  mLists[MAX_DISPLAYS];
-    DisplayData                     mDisplayData[MAX_DISPLAYS];
+    struct hwc_display_contents_1*  mLists[MAX_HWC_DISPLAYS];
+    DisplayData                     mDisplayData[MAX_HWC_DISPLAYS];
     size_t                          mNumDisplays;
 
     cb_context*                     mCBContext;
     EventHandler&                   mEventHandler;
-    size_t                          mVSyncCount;
+    size_t                          mVSyncCounts[HWC_NUM_PHYSICAL_DISPLAY_TYPES];
     sp<VSyncThread>                 mVSyncThread;
     bool                            mDebugForceFakeVSync;
     BitSet32                        mAllocatedDisplayIDs;
+    bool                            mVDSEnabled;
 
     // protected by mLock
     mutable Mutex mLock;
-    mutable nsecs_t mLastHwVSync;
+    // synchronization between Draw call and Dumpsys call
+    mutable Mutex mDrawLock;
+    mutable nsecs_t mLastHwVSync[HWC_NUM_PHYSICAL_DISPLAY_TYPES];
 
     // thread-safe
     mutable Mutex mEventControlLock;
+
+    //GPUTileRect : CompMap, class to track the composition type of layers
+    struct CompMap {
+        int32_t count;
+        int32_t compType[MAX_LAYER_COUNT];
+        CompMap () {
+            reset();
+        }
+        void reset () {
+            count=0;
+            for(size_t i= 0; i <MAX_LAYER_COUNT; i++) {
+                compType[i] = -1;
+            }
+        }
+        CompMap& operator=(const CompMap &rhs) {
+            if(this != &rhs) {
+                reset();
+                count = rhs.count;
+                for(int32_t i=0; i<count; i++) {
+                    compType[i] = rhs.compType[i];
+                }
+            }
+            return *this;
+        }
+        bool operator== (CompMap &rhs) {
+            if( count != rhs.count)
+                return false;
+            for(int32_t i=0; i<count; i++) {
+                if(compType[i] != rhs.compType[i])
+                    return false;
+            }
+            return true;
+        }
+    };
+
+#ifdef QCOM_BSP
+    //GPUTileRect Optimization Functions.
+    CompMap prev_comp_map[MAX_HWC_DISPLAYS], current_comp_map[MAX_HWC_DISPLAYS];
+    bool isCompositionMapChanged(int32_t id);
+    bool isGeometryChanged(int32_t id);
+    void computeUnionDirtyRect(int32_t id, Rect& unionDirtyRect);
+    bool areVisibleRegionsOverlapping(int32_t id );
+    bool needsScaling(int32_t id);
+    float mDynThreshold;
+    bool canHandleOverlapArea(int32_t id, Rect unionDr);
+#endif
 };
 
 // ---------------------------------------------------------------------------

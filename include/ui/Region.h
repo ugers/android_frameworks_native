@@ -39,7 +39,9 @@ public:
                         Region(const Region& rhs);
     explicit            Region(const Rect& rhs);
                         ~Region();
-                        
+
+    static  Region      createTJunctionFreeRegion(const Region& r);
+
         Region& operator = (const Region& rhs);
 
     inline  bool        isEmpty() const     { return getBounds().isEmpty(); }
@@ -106,6 +108,10 @@ public:
     inline  Region&     operator += (const Point& pt);
 
     
+    // returns true if the regions share the same underlying storage
+    bool isTriviallyEqual(const Region& region) const;
+
+
     /* various ways to access the rectangle list */
 
     
@@ -130,8 +136,8 @@ public:
             void        addRectUnchecked(int l, int t, int r, int b);
 
     inline  bool        isFixedSize() const { return false; }
-            size_t      getSize() const;
-            status_t    flatten(void* buffer) const;
+            size_t      getFlattenedSize() const;
+            status_t    flatten(void* buffer, size_t size) const;
             status_t    unflatten(void const* buffer, size_t size);
 
     void        dump(String8& out, const char* what, uint32_t flags=0) const;

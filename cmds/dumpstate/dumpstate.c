@@ -25,7 +25,7 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <linux/capability.h>
+#include <sys/capability.h>
 #include <linux/prctl.h>
 
 #include <cutils/properties.h>
@@ -33,7 +33,7 @@
 #include "private/android_filesystem_config.h"
 
 #define LOG_TAG "dumpstate"
-#include <utils/Log.h>
+#include <cutils/log.h>
 
 #include "dumpstate.h"
 
@@ -95,14 +95,21 @@ static void dumpstate() {
 
     run_command("PROCESSES", 10, "ps", "-P", NULL);
     run_command("PROCESSES AND THREADS", 10, "ps", "-t", "-p", "-P", NULL);
+    run_command("PROCESSES (SELINUX LABELS)", 10, "ps", "-Z", NULL);
     run_command("LIBRANK", 10, "librank", NULL);
 
     do_dmesg();
 
     run_command("LIST OF OPEN FILES", 10, SU_PATH, "root", "lsof", NULL);
 
+    if (screenshot_path[0]) {
+        ALOGI("taking screenshot\n");
+        run_command(NULL, 10, "/system/bin/screencap", "-p", screenshot_path, NULL);
+        ALOGI("wrote screenshot: %s\n", screenshot_path);
+    }
+
     for_each_pid(do_showmap, "SMAPS OF ALL PROCESSES");
-    for_each_pid(show_wchan, "BLOCKED PROCESS WAIT-CHANNELS");
+    for_each_tid(show_wchan, "BLOCKED PROCESS WAIT-CHANNELS");
 
     // dump_file("EVENT LOG TAGS", "/etc/event-log-tags");
     run_command("SYSTEM LOG", 20, "logcat", "-v", "threadtime", "-d", "*:v", NULL);
@@ -159,12 +166,6 @@ static void dumpstate() {
     dump_file("LAST PANIC CONSOLE", "/data/dontpanic/apanic_console");
     dump_file("LAST PANIC THREADS", "/data/dontpanic/apanic_threads");
 
-    if (screenshot_path[0]) {
-        ALOGI("taking screenshot\n");
-        run_command(NULL, 5, SU_PATH, "root", "screenshot", screenshot_path, NULL);
-        ALOGI("wrote screenshot: %s\n", screenshot_path);
-    }
-
     run_command("SYSTEM SETTINGS", 20, SU_PATH, "root", "sqlite3",
             "/data/data/com.android.providers.settings/databases/settings.db",
             "pragma user_version; select * from system; select * from secure; select * from global;", NULL);
@@ -186,7 +187,7 @@ static void dumpstate() {
     run_command("IP6TABLE RAW", 10, SU_PATH, "root", "ip6tables", "-t", "raw", "-L", "-nvx", NULL);
 
     run_command("WIFI NETWORKS", 20,
-            SU_PATH, "root", "wpa_cli", "list_networks", NULL);
+            SU_PATH, "root", "wpa_cli", "IFNAME=wlan0", "list_networks", NULL);
 
 #ifdef FWDUMP_bcmdhd
     run_command("DUMP WIFI INTERNAL COUNTERS", 20,
@@ -196,13 +197,13 @@ static void dumpstate() {
 
     property_get("dhcp.wlan0.gateway", network, "");
     if (network[0])
-        run_command("PING GATEWAY", 10, SU_PATH, "root", "ping", "-c", "3", "-i", ".5", network, NULL);
+        run_command("PING GATEWAY", 10, "ping", "-c", "3", "-i", ".5", network, NULL);
     property_get("dhcp.wlan0.dns1", network, "");
     if (network[0])
-        run_command("PING DNS1", 10, SU_PATH, "root", "ping", "-c", "3", "-i", ".5", network, NULL);
+        run_command("PING DNS1", 10, "ping", "-c", "3", "-i", ".5", network, NULL);
     property_get("dhcp.wlan0.dns2", network, "");
     if (network[0])
-        run_command("PING DNS2", 10, SU_PATH, "root", "ping", "-c", "3", "-i", ".5", network, NULL);
+        run_command("PING DNS2", 10, "ping", "-c", "3", "-i", ".5", network, NULL);
 #ifdef FWDUMP_bcmdhd
     run_command("DUMP WIFI STATUS", 20,
             SU_PATH, "root", "dhdutil", "-i", "wlan0", "dump", NULL);
@@ -216,7 +217,7 @@ static void dumpstate() {
     run_command("VOLD DUMP", 10, "vdc", "dump", NULL);
     run_command("SECURE CONTAINERS", 10, "vdc", "asec", "list", NULL);
 
-    run_command("FILESYSTEMS & FREE SPACE", 10, SU_PATH, "root", "df", NULL);
+    run_command("FILESYSTEMS & FREE SPACE", 10, "df", NULL);
 
     run_command("PACKAGE SETTINGS", 20, SU_PATH, "root", "cat", "/data/system/packages.xml", NULL);
     dump_file("PACKAGE UID ERRORS", "/data/system/uiderrors.txt");
@@ -243,14 +244,12 @@ static void dumpstate() {
     dump_file("BINDER STATS", "/sys/kernel/debug/binder/stats");
     dump_file("BINDER STATE", "/sys/kernel/debug/binder/state");
 
-#ifdef BOARD_HAS_DUMPSTATE
     printf("========================================================\n");
     printf("== Board\n");
     printf("========================================================\n");
 
     dumpstate_board();
     printf("\n");
-#endif
 
     /* Migrate the ril_dumpstate to a dumpstate_board()? */
     char ril_dumpstate_timeout[PROPERTY_VALUE_MAX] = {0};
@@ -276,6 +275,16 @@ static void dumpstate() {
        to increase its timeout.  we really need to do the timeouts in
        dumpsys itself... */
     run_command("DUMPSYS", 60, "dumpsys", NULL);
+
+    printf("========================================================\n");
+    printf("== Checkins\n");
+    printf("========================================================\n");
+
+    run_command("CHECKIN BATTERYSTATS", 30, "dumpsys", "batterystats", "-c", NULL);
+    run_command("CHECKIN MEMINFO", 30, "dumpsys", "meminfo", "--checkin", NULL);
+    run_command("CHECKIN NETSTATS", 30, "dumpsys", "netstats", "--checkin", NULL);
+    run_command("CHECKIN PROCSTATS", 30, "dumpsys", "procstats", "-c", NULL);
+    run_command("CHECKIN USAGESTATS", 30, "dumpsys", "usagestats", "-c", NULL);
 
     printf("========================================================\n");
     printf("== Running Application Activities\n");
@@ -311,10 +320,17 @@ static void usage() {
             "  -b: play sound file instead of vibrate, at beginning of job\n"
             "  -e: play sound file instead of vibrate, at end of job\n"
             "  -q: disable vibrate\n"
+            "  -B: send broadcast when finished (requires -o and -p)\n"
 		);
 }
 
+static void sigpipe_handler(int n) {
+    (void)n;
+    exit(EXIT_FAILURE);
+}
+
 int main(int argc, char *argv[]) {
+    struct sigaction sigact;
     int do_add_date = 0;
     int do_compress = 0;
     int do_vibrate = 1;
@@ -323,6 +339,7 @@ int main(int argc, char *argv[]) {
     char* end_sound = 0;
     int use_socket = 0;
     int do_fb = 0;
+    int do_broadcast = 0;
 
     if (getuid() != 0) {
         // Old versions of the adb client would call the
@@ -334,7 +351,9 @@ int main(int argc, char *argv[]) {
     }
     ALOGI("begin\n");
 
-    signal(SIGPIPE, SIG_IGN);
+    memset(&sigact, 0, sizeof(sigact));
+    sigact.sa_handler = sigpipe_handler;
+    sigaction(SIGPIPE, &sigact, NULL);
 
     /* set as high priority, and protect from OOM killer */
     setpriority(PRIO_PROCESS, 0, -20);
@@ -348,7 +367,7 @@ int main(int argc, char *argv[]) {
     dump_traces_path = dump_traces();
 
     int c;
-    while ((c = getopt(argc, argv, "b:de:ho:svqzp")) != -1) {
+    while ((c = getopt(argc, argv, "b:de:ho:svqzpB")) != -1) {
         switch (c) {
             case 'b': begin_sound = optarg;  break;
             case 'd': do_add_date = 1;       break;
@@ -359,6 +378,7 @@ int main(int argc, char *argv[]) {
             case 'q': do_vibrate = 0;        break;
             case 'z': do_compress = 6;       break;
             case 'p': do_fb = 1;             break;
+            case 'B': do_broadcast = 1;      break;
             case '?': printf("\n");
             case 'h':
                 usage();
@@ -472,6 +492,14 @@ int main(int argc, char *argv[]) {
     /* rename the (now complete) .tmp file to its final location */
     if (use_outfile && rename(tmp_path, path)) {
         fprintf(stderr, "rename(%s, %s): %s\n", tmp_path, path, strerror(errno));
+    }
+
+    if (do_broadcast && use_outfile && do_fb) {
+        run_command(NULL, 5, "/system/bin/am", "broadcast", "--user", "0",
+                "-a", "android.intent.action.BUGREPORT_FINISHED",
+                "--es", "android.intent.extra.BUGREPORT", path,
+                "--es", "android.intent.extra.SCREENSHOT", screenshot_path,
+                "--receiver-permission", "android.permission.DUMP", NULL);
     }
 
     ALOGI("done\n");

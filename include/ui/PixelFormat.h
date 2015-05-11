@@ -61,13 +61,13 @@ enum {
     PIXEL_FORMAT_RGB_888     = HAL_PIXEL_FORMAT_RGB_888,    // 3x8-bit RGB
     PIXEL_FORMAT_RGB_565     = HAL_PIXEL_FORMAT_RGB_565,    // 16-bit RGB
     PIXEL_FORMAT_BGRA_8888   = HAL_PIXEL_FORMAT_BGRA_8888,  // 4x8-bit BGRA
-    PIXEL_FORMAT_RGBA_5551   = HAL_PIXEL_FORMAT_RGBA_5551,  // 16-bit ARGB
-    PIXEL_FORMAT_RGBA_4444   = HAL_PIXEL_FORMAT_RGBA_4444,  // 16-bit ARGB
-    PIXEL_FORMAT_A_8         = 8,                           // 8-bit A
+    PIXEL_FORMAT_RGBA_5551   = 6,                           // 16-bit ARGB
+    PIXEL_FORMAT_RGBA_4444   = 7,                           // 16-bit ARGB
 };
 
 typedef int32_t PixelFormat;
 
+#ifdef HAVE_PIXEL_FORMAT_INFO
 struct PixelFormatInfo {
     enum {
         INDEX_ALPHA   = 0,
@@ -117,11 +117,12 @@ struct PixelFormatInfo {
     uint32_t    reserved1;
 };
 
-// Consider caching the results of these functions are they're not
-// guaranteed to be fast.
-ssize_t     bytesPerPixel(PixelFormat format);
-ssize_t     bitsPerPixel(PixelFormat format);
-status_t    getPixelFormatInfo(PixelFormat format, PixelFormatInfo* info);
+status_t getPixelFormatInfo(PixelFormat format, PixelFormatInfo* info);
+#endif
+
+ssize_t bytesPerPixel(PixelFormat format);
+ssize_t bitsPerPixel(PixelFormat format);
+unsigned int minColorDepth(PixelFormat format);
 
 }; // namespace android
 

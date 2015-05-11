@@ -21,6 +21,7 @@
 namespace android {
 // ----------------------------------------------------------------------------
 
+#ifdef HAVE_PIXEL_FORMAT_INFO
 static const int COMPONENT_YUV = 0xFF;
 
 struct Info {
@@ -75,20 +76,6 @@ size_t PixelFormatInfo::getScanlineSize(unsigned int width) const
     return size;
 }
 
-ssize_t bytesPerPixel(PixelFormat format)
-{
-    PixelFormatInfo info;
-    status_t err = getPixelFormatInfo(format, &info);
-    return (err < 0) ? err : info.bytesPerPixel;
-}
-
-ssize_t bitsPerPixel(PixelFormat format)
-{
-    PixelFormatInfo info;
-    status_t err = getPixelFormatInfo(format, &info);
-    return (err < 0) ? err : info.bitsPerPixel;
-}
-
 status_t getPixelFormatInfo(PixelFormat format, PixelFormatInfo* info)
 {
     if (format <= 0)
@@ -138,6 +125,55 @@ status_t getPixelFormatInfo(PixelFormat format, PixelFormatInfo* info)
     info->components    = i->components;
 
     return NO_ERROR;
+}
+#endif
+
+ssize_t bytesPerPixel(PixelFormat format) {
+    switch (format) {
+        case PIXEL_FORMAT_RGBA_8888:
+        case PIXEL_FORMAT_RGBX_8888:
+        case PIXEL_FORMAT_BGRA_8888:
+            return 4;
+        case PIXEL_FORMAT_RGB_888:
+            return 3;
+        case PIXEL_FORMAT_RGB_565:
+        case PIXEL_FORMAT_RGBA_5551:
+        case PIXEL_FORMAT_RGBA_4444:
+            return 2;
+    }
+    return BAD_VALUE;
+}
+
+ssize_t bitsPerPixel(PixelFormat format) {
+    switch (format) {
+        case PIXEL_FORMAT_RGBA_8888:
+        case PIXEL_FORMAT_RGBX_8888:
+        case PIXEL_FORMAT_BGRA_8888:
+            return 32;
+        case PIXEL_FORMAT_RGB_888:
+            return 24;
+        case PIXEL_FORMAT_RGB_565:
+        case PIXEL_FORMAT_RGBA_5551:
+        case PIXEL_FORMAT_RGBA_4444:
+            return 16;
+    }
+    return BAD_VALUE;
+}
+
+unsigned int minColorDepth(PixelFormat format) {
+    switch (format) {
+        case PIXEL_FORMAT_RGBA_8888:
+        case PIXEL_FORMAT_RGBX_8888:
+        case PIXEL_FORMAT_BGRA_8888:
+        case PIXEL_FORMAT_RGB_888:
+            return 8;
+        case PIXEL_FORMAT_RGB_565:
+        case PIXEL_FORMAT_RGBA_5551:
+            return 5;
+        case PIXEL_FORMAT_RGBA_4444:
+            return 4;
+    }
+    return BAD_VALUE;
 }
 
 // ----------------------------------------------------------------------------

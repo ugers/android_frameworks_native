@@ -1,21 +1,22 @@
-/* 
+/*
  ** Copyright 2007, The Android Open Source Project
  **
- ** Licensed under the Apache License, Version 2.0 (the "License"); 
- ** you may not use this file except in compliance with the License. 
- ** You may obtain a copy of the License at 
+ ** Licensed under the Apache License, Version 2.0 (the "License");
+ ** you may not use this file except in compliance with the License.
+ ** You may obtain a copy of the License at
  **
- **     http://www.apache.org/licenses/LICENSE-2.0 
+ **     http://www.apache.org/licenses/LICENSE-2.0
  **
- ** Unless required by applicable law or agreed to in writing, software 
- ** distributed under the License is distributed on an "AS IS" BASIS, 
- ** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
- ** See the License for the specific language governing permissions and 
+ ** Unless required by applicable law or agreed to in writing, software
+ ** distributed under the License is distributed on an "AS IS" BASIS,
+ ** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ ** See the License for the specific language governing permissions and
  ** limitations under the License.
  */
 
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
+#include <dlfcn.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,8 +26,6 @@
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include <GLES/gl.h>
-#include <GLES/glext.h>
 
 #include <cutils/log.h>
 #include <cutils/atomic.h>
@@ -39,42 +38,134 @@
 #include <utils/String8.h>
 #include <utils/Trace.h>
 
-#include "egl_impl.h"
-#include "egl_tls.h"
-#include "glestrace.h"
-#include "hooks.h"
+#include "../egl_impl.h"
+#include "../glestrace.h"
+#include "../hooks.h"
 
 #include "egl_display.h"
-#include "egl_impl.h"
 #include "egl_object.h"
 #include "egl_tls.h"
 #include "egldefs.h"
 
 using namespace android;
 
+// This extension has not been ratified yet, so can't be shipped.
+// Implementation is incomplete and untested.
+#define ENABLE_EGL_KHR_GL_COLORSPACE 0
+
 // ----------------------------------------------------------------------------
 
-#define EGL_VERSION_HW_ANDROID  0x3143
+namespace android {
 
 struct extention_map_t {
     const char* name;
     __eglMustCastToProperFunctionPointerType address;
 };
 
-static const extention_map_t sExtentionMap[] = {
+/*
+ * This is the list of EGL extensions exposed to applications.
+ *
+ * Some of them (gBuiltinExtensionString) are implemented entirely in this EGL
+ * wrapper and are always available.
+ *
+ * The rest (gExtensionString) depend on support in the EGL driver, and are
+ * only available if the driver supports them. However, some of these must be
+ * supported because they are used by the Android system itself; these are
+ * listd as mandatory below and are required by the CDD. The system *assumes*
+ * the mandatory extensions are present and may not function properly if some
+ * are missing.
+ *
+ * NOTE: Both strings MUST have a single space as the last character.
+ */
+extern char const * const gBuiltinExtensionString =
+        "EGL_KHR_get_all_proc_addresses "
+        "EGL_ANDROID_presentation_time "
+        ;
+extern char const * const gExtensionString  =
+        "EGL_KHR_image "                        // mandatory
+        "EGL_KHR_image_base "                   // mandatory
+        "EGL_KHR_image_pixmap "
+        "EGL_KHR_lock_surface "
+#if (ENABLE_EGL_KHR_GL_COLORSPACE != 0)
+        "EGL_KHR_gl_colorspace "
+#endif
+        "EGL_KHR_gl_texture_2D_image "
+        "EGL_KHR_gl_texture_cubemap_image "
+        "EGL_KHR_gl_renderbuffer_image "
+        "EGL_KHR_reusable_sync "
+        "EGL_KHR_fence_sync "
+        "EGL_KHR_create_context "
+        "EGL_EXT_create_context_robustness "
+        "EGL_NV_system_time "
+        "EGL_ANDROID_image_native_buffer "      // mandatory
+        "EGL_KHR_wait_sync "                    // strongly recommended
+        "EGL_ANDROID_recordable "               // mandatory
+        ;
+
+// extensions not exposed to applications but used by the ANDROID system
+//      "EGL_ANDROID_blob_cache "               // strongly recommended
+//      "EGL_IMG_hibernate_process "            // optional
+//      "EGL_ANDROID_native_fence_sync "        // strongly recommended
+//      "EGL_ANDROID_framebuffer_target "       // mandatory for HWC 1.1
+//      "EGL_ANDROID_image_crop "               // optional
+
+/*
+ * EGL Extensions entry-points exposed to 3rd party applications
+ * (keep in sync with gExtensionString above)
+ *
+ */
+static const extention_map_t sExtensionMap[] = {
+    // EGL_KHR_lock_surface
     { "eglLockSurfaceKHR",
             (__eglMustCastToProperFunctionPointerType)&eglLockSurfaceKHR },
     { "eglUnlockSurfaceKHR",
             (__eglMustCastToProperFunctionPointerType)&eglUnlockSurfaceKHR },
+
+    // EGL_KHR_image, EGL_KHR_image_base
     { "eglCreateImageKHR",
             (__eglMustCastToProperFunctionPointerType)&eglCreateImageKHR },
     { "eglDestroyImageKHR",
             (__eglMustCastToProperFunctionPointerType)&eglDestroyImageKHR },
+
+    // EGL_KHR_reusable_sync, EGL_KHR_fence_sync
+    { "eglCreateSyncKHR",
+            (__eglMustCastToProperFunctionPointerType)&eglCreateSyncKHR },
+    { "eglDestroySyncKHR",
+            (__eglMustCastToProperFunctionPointerType)&eglDestroySyncKHR },
+    { "eglClientWaitSyncKHR",
+            (__eglMustCastToProperFunctionPointerType)&eglClientWaitSyncKHR },
+    { "eglSignalSyncKHR",
+            (__eglMustCastToProperFunctionPointerType)&eglSignalSyncKHR },
+    { "eglGetSyncAttribKHR",
+            (__eglMustCastToProperFunctionPointerType)&eglGetSyncAttribKHR },
+
+    // EGL_NV_system_time
     { "eglGetSystemTimeFrequencyNV",
             (__eglMustCastToProperFunctionPointerType)&eglGetSystemTimeFrequencyNV },
     { "eglGetSystemTimeNV",
             (__eglMustCastToProperFunctionPointerType)&eglGetSystemTimeNV },
+
+    // EGL_KHR_wait_sync
+    { "eglWaitSyncKHR",
+            (__eglMustCastToProperFunctionPointerType)&eglWaitSyncKHR },
+
+    // EGL_ANDROID_presentation_time
+    { "eglPresentationTimeANDROID",
+            (__eglMustCastToProperFunctionPointerType)&eglPresentationTimeANDROID },
 };
+
+/*
+ * These extensions entry-points should not be exposed to applications.
+ * They're used internally by the Android EGL layer.
+ */
+#define FILTER_EXTENSIONS(procname) \
+        (!strcmp((procname), "eglSetBlobCacheFuncsANDROID") ||    \
+         !strcmp((procname), "eglHibernateProcessIMG")      ||    \
+         !strcmp((procname), "eglAwakenProcessIMG")         ||    \
+         !strcmp((procname), "eglDupNativeFenceFDANDROID")  ||    \
+         !strcmp((procname), "eglGpuPerfHintQCOM"))
+
+
 
 // accesses protected by sExtensionMapMutex
 static DefaultKeyedVector<String8, __eglMustCastToProperFunctionPointerType> sGLExtentionMap;
@@ -93,13 +184,15 @@ static void(*findProcAddress(const char* name,
 
 // ----------------------------------------------------------------------------
 
-namespace android {
 extern void setGLHooksThreadSpecific(gl_hooks_t const *value);
 extern EGLBoolean egl_init_drivers();
 extern const __eglMustCastToProperFunctionPointerType gExtensionForwarders[MAX_NUMBER_OF_GL_EXTENSIONS];
-extern int gEGLDebugLevel;
+extern int getEGLDebugLevel();
+extern void setEGLDebugLevel(int level);
 extern gl_hooks_t gHooksTrace;
+
 } // namespace android;
+
 
 // ----------------------------------------------------------------------------
 
@@ -153,7 +246,7 @@ EGLBoolean eglTerminate(EGLDisplay dpy)
     if (!dp) return setError(EGL_BAD_DISPLAY, EGL_FALSE);
 
     EGLBoolean res = dp->terminate();
-    
+
     return res;
 }
 
@@ -234,7 +327,7 @@ EGLBoolean eglChooseConfig( EGLDisplay dpy, const EGLint *attrib_list,
 
                 if (attribRendererable && attribRendererable[1] == EGL_OPENGL_ES2_BIT &&
                         (!attribCaveat || attribCaveat[1] != EGL_NONE)) {
-    
+
                     // Insert 2 extra attributes to force-enable MSAA 4x
                     EGLint aaAttribs[attribCount + 4];
                     aaAttribs[0] = EGL_SAMPLE_BUFFERS;
@@ -271,7 +364,7 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
     egl_connection_t* cnx = NULL;
     const egl_display_ptr dp = validate_display_connection(dpy, cnx);
     if (!dp) return EGL_FALSE;
-    
+
     return cnx->egl.eglGetConfigAttrib(
             dp->disp.dpy, config, attribute, value);
 }
@@ -279,6 +372,31 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
 // ----------------------------------------------------------------------------
 // surfaces
 // ----------------------------------------------------------------------------
+
+// The EGL_KHR_gl_colorspace spec hasn't been ratified yet, so these haven't
+// been added to the Khronos egl.h.
+#define EGL_GL_COLORSPACE_KHR           EGL_VG_COLORSPACE
+#define EGL_GL_COLORSPACE_SRGB_KHR      EGL_VG_COLORSPACE_sRGB
+#define EGL_GL_COLORSPACE_LINEAR_KHR    EGL_VG_COLORSPACE_LINEAR
+
+// Turn linear formats into corresponding sRGB formats when colorspace is
+// EGL_GL_COLORSPACE_SRGB_KHR, or turn sRGB formats into corresponding linear
+// formats when colorspace is EGL_GL_COLORSPACE_LINEAR_KHR. In any cases where
+// the modification isn't possible, the original format is returned.
+static int modifyFormatColorspace(int fmt, EGLint colorspace) {
+    if (colorspace == EGL_GL_COLORSPACE_LINEAR_KHR) {
+        switch (fmt) {
+            case HAL_PIXEL_FORMAT_sRGB_A_8888: return HAL_PIXEL_FORMAT_RGBA_8888;
+            case HAL_PIXEL_FORMAT_sRGB_X_8888: return HAL_PIXEL_FORMAT_RGBX_8888;
+        }
+    } else if (colorspace == EGL_GL_COLORSPACE_SRGB_KHR) {
+        switch (fmt) {
+            case HAL_PIXEL_FORMAT_RGBA_8888: return HAL_PIXEL_FORMAT_sRGB_A_8888;
+            case HAL_PIXEL_FORMAT_RGBX_8888: return HAL_PIXEL_FORMAT_sRGB_X_8888;
+        }
+    }
+    return fmt;
+}
 
 EGLSurface eglCreateWindowSurface(  EGLDisplay dpy, EGLConfig config,
                                     NativeWindowType window,
@@ -290,25 +408,103 @@ EGLSurface eglCreateWindowSurface(  EGLDisplay dpy, EGLConfig config,
     egl_display_ptr dp = validate_display_connection(dpy, cnx);
     if (dp) {
         EGLDisplay iDpy = dp->disp.dpy;
-        EGLint format;
 
         if (native_window_api_connect(window, NATIVE_WINDOW_API_EGL) != OK) {
             ALOGE("EGLNativeWindowType %p already connected to another API",
                     window);
-            return setError(EGL_BAD_NATIVE_WINDOW, EGL_NO_SURFACE);
+            return setError(EGL_BAD_ALLOC, EGL_NO_SURFACE);
         }
 
-        // set the native window's buffers format to match this config
-        if (cnx->egl.eglGetConfigAttrib(iDpy,
-                config, EGL_NATIVE_VISUAL_ID, &format)) {
-            if (format != 0) {
-                int err = native_window_set_buffers_format(window, format);
-                if (err != 0) {
-                    ALOGE("error setting native window pixel format: %s (%d)",
-                            strerror(-err), err);
-                    native_window_api_disconnect(window, NATIVE_WINDOW_API_EGL);
-                    return setError(EGL_BAD_NATIVE_WINDOW, EGL_NO_SURFACE);
+        // Set the native window's buffers format to match what this config requests.
+        // Whether to use sRGB gamma is not part of the EGLconfig, but is part
+        // of our native format. So if sRGB gamma is requested, we have to
+        // modify the EGLconfig's format before setting the native window's
+        // format.
+#if WORKAROUND_BUG_10194508
+#warning "WORKAROUND_10194508 enabled"
+        EGLint format;
+        if (!cnx->egl.eglGetConfigAttrib(iDpy, config, EGL_NATIVE_VISUAL_ID,
+                &format)) {
+            ALOGE("eglGetConfigAttrib(EGL_NATIVE_VISUAL_ID) failed: %#x",
+                    eglGetError());
+            format = 0;
+        }
+        if (attrib_list) {
+            for (const EGLint* attr = attrib_list; *attr != EGL_NONE;
+                    attr += 2) {
+                if (*attr == EGL_GL_COLORSPACE_KHR &&
+                        dp->haveExtension("EGL_KHR_gl_colorspace")) {
+                    if (ENABLE_EGL_KHR_GL_COLORSPACE) {
+                        format = modifyFormatColorspace(format, *(attr+1));
+                    } else {
+                        // Normally we'd pass through unhandled attributes to
+                        // the driver. But in case the driver implements this
+                        // extension but we're disabling it, we want to prevent
+                        // it getting through -- support will be broken without
+                        // our help.
+                        ALOGE("sRGB window surfaces not supported");
+                        return setError(EGL_BAD_ATTRIBUTE, EGL_NO_SURFACE);
+                    }
                 }
+            }
+        }
+#else
+        // by default, just pick RGBA_8888
+#ifdef USE_BGRA_8888
+        EGLint format = HAL_PIXEL_FORMAT_BGRA_8888;
+#else
+        EGLint format = HAL_PIXEL_FORMAT_RGBA_8888;
+#endif
+
+        EGLint a = 0;
+        cnx->egl.eglGetConfigAttrib(iDpy, config, EGL_ALPHA_SIZE, &a);
+        if (a > 0) {
+            // alpha-channel requested, there's really only one suitable format
+#ifdef USE_BGRA_8888
+            format = HAL_PIXEL_FORMAT_BGRA_8888;
+#else
+            format = HAL_PIXEL_FORMAT_RGBA_8888;
+#endif
+        } else {
+            EGLint r, g, b;
+            r = g = b = 0;
+            cnx->egl.eglGetConfigAttrib(iDpy, config, EGL_RED_SIZE,   &r);
+            cnx->egl.eglGetConfigAttrib(iDpy, config, EGL_GREEN_SIZE, &g);
+            cnx->egl.eglGetConfigAttrib(iDpy, config, EGL_BLUE_SIZE,  &b);
+            EGLint colorDepth = r + g + b;
+            if (colorDepth <= 16) {
+                format = HAL_PIXEL_FORMAT_RGB_565;
+            } else {
+                format = HAL_PIXEL_FORMAT_RGBX_8888;
+            }
+        }
+
+        // now select a corresponding sRGB format if needed
+        if (attrib_list && dp->haveExtension("EGL_KHR_gl_colorspace")) {
+            for (const EGLint* attr = attrib_list; *attr != EGL_NONE; attr += 2) {
+                if (*attr == EGL_GL_COLORSPACE_KHR) {
+                    if (ENABLE_EGL_KHR_GL_COLORSPACE) {
+                        format = modifyFormatColorspace(format, *(attr+1));
+                    } else {
+                        // Normally we'd pass through unhandled attributes to
+                        // the driver. But in case the driver implements this
+                        // extension but we're disabling it, we want to prevent
+                        // it getting through -- support will be broken without
+                        // our help.
+                        ALOGE("sRGB window surfaces not supported");
+                        return setError(EGL_BAD_ATTRIBUTE, EGL_NO_SURFACE);
+                    }
+                }
+            }
+        }
+#endif
+        if (format != 0) {
+            int err = native_window_set_buffers_format(window, format);
+            if (err != 0) {
+                ALOGE("error setting native window pixel format: %s (%d)",
+                        strerror(-err), err);
+                native_window_api_disconnect(window, NATIVE_WINDOW_API_EGL);
+                return setError(EGL_BAD_NATIVE_WINDOW, EGL_NO_SURFACE);
             }
         }
 
@@ -370,7 +566,7 @@ EGLSurface eglCreatePbufferSurface( EGLDisplay dpy, EGLConfig config,
     }
     return EGL_NO_SURFACE;
 }
-                                    
+
 EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface)
 {
     clearError();
@@ -421,11 +617,6 @@ void EGLAPI eglBeginFrame(EGLDisplay dpy, EGLSurface surface) {
         setError(EGL_BAD_SURFACE, EGL_FALSE);
         return;
     }
-
-    int64_t timestamp = systemTime(SYSTEM_TIME_MONOTONIC);
-
-    egl_surface_t const * const s = get_surface(surface);
-    native_window_set_buffers_timestamp(s->win.get(), timestamp);
 }
 
 // ----------------------------------------------------------------------------
@@ -439,8 +630,11 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
 
     egl_connection_t* cnx = NULL;
     const egl_display_ptr dp = validate_display_connection(dpy, cnx);
-    if (dpy) {
+    if (dp) {
         if (share_list != EGL_NO_CONTEXT) {
+            if (!ContextRef(dp.get(), share_list).get()) {
+                return setError(EGL_BAD_CONTEXT, EGL_NO_CONTEXT);
+            }
             egl_context_t* const c = get_context(share_list);
             share_list = c->context;
         }
@@ -456,7 +650,7 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
                     if (attr == EGL_CONTEXT_CLIENT_VERSION) {
                         if (value == 1) {
                             version = egl_connection_t::GLESv1_INDEX;
-                        } else if (value == 2) {
+                        } else if (value == 2 || value == 3) {
                             version = egl_connection_t::GLESv2_INDEX;
                         }
                     }
@@ -465,16 +659,10 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
             egl_context_t* c = new egl_context_t(dpy, context, config, cnx,
                     version);
 #if EGL_TRACE
-            if (gEGLDebugLevel > 0)
+            if (getEGLDebugLevel() > 0)
                 GLTrace_eglCreateContext(version, c);
 #endif
             return c;
-        } else {
-            EGLint error = eglGetError();
-            ALOGE_IF(error == EGL_SUCCESS,
-                    "eglCreateContext(%p, %p, %p, %p) returned EGL_NO_CONTEXT "
-                    "but no EGL error!",
-                    dpy, config, share_list, attrib_list);
         }
     }
     return EGL_NO_CONTEXT;
@@ -491,7 +679,7 @@ EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx)
     ContextRef _c(dp.get(), ctx);
     if (!_c.get())
         return setError(EGL_BAD_CONTEXT, EGL_FALSE);
-    
+
     egl_context_t * const c = get_context(ctx);
     EGLBoolean result = c->cnx->egl.eglDestroyContext(dp->disp.dpy, c->context);
     if (result == EGL_TRUE) {
@@ -524,7 +712,7 @@ EGLBoolean eglMakeCurrent(  EGLDisplay dpy, EGLSurface draw,
     // validate the context (if not EGL_NO_CONTEXT)
     if ((ctx != EGL_NO_CONTEXT) && !_c.get()) {
         // EGL_NO_CONTEXT is valid
-        return EGL_FALSE;
+        return setError(EGL_BAD_CONTEXT, EGL_FALSE);
     }
 
     // these are the underlying implementation's object
@@ -539,18 +727,18 @@ EGLBoolean eglMakeCurrent(  EGLDisplay dpy, EGLSurface draw,
 
     // these are the current objects structs
     egl_context_t * cur_c = get_context(getContext());
-    
+
     if (ctx != EGL_NO_CONTEXT) {
         c = get_context(ctx);
         impl_ctx = c->context;
     } else {
         // no context given, use the implementation of the current context
+        if (draw != EGL_NO_SURFACE || read != EGL_NO_SURFACE) {
+            // calling eglMakeCurrent( ..., !=0, !=0, EGL_NO_CONTEXT);
+            return setError(EGL_BAD_MATCH, EGL_FALSE);
+        }
         if (cur_c == NULL) {
             // no current context
-            if (draw != EGL_NO_SURFACE || read != EGL_NO_SURFACE) {
-                // calling eglMakeCurrent( ..., !=0, !=0, EGL_NO_CONTEXT);
-                return setError(EGL_BAD_MATCH, EGL_FALSE);
-            }
             // not an error, there is just no current context.
             return EGL_TRUE;
         }
@@ -558,12 +746,14 @@ EGLBoolean eglMakeCurrent(  EGLDisplay dpy, EGLSurface draw,
 
     // retrieve the underlying implementation's draw EGLSurface
     if (draw != EGL_NO_SURFACE) {
+        if (!_d.get()) return setError(EGL_BAD_SURFACE, EGL_FALSE);
         d = get_surface(draw);
         impl_draw = d->surface;
     }
 
     // retrieve the underlying implementation's read EGLSurface
     if (read != EGL_NO_SURFACE) {
+        if (!_r.get()) return setError(EGL_BAD_SURFACE, EGL_FALSE);
         r = get_surface(read);
         impl_read = r->surface;
     }
@@ -578,7 +768,7 @@ EGLBoolean eglMakeCurrent(  EGLDisplay dpy, EGLSurface draw,
             setGLHooksThreadSpecific(c->cnx->hooks[c->version]);
             egl_tls_t::setContext(ctx);
 #if EGL_TRACE
-            if (gEGLDebugLevel > 0)
+            if (getEGLDebugLevel() > 0)
                 GLTrace_eglMakeCurrent(c->version, c->cnx->hooks[c->version], ctx);
 #endif
             _c.acquire();
@@ -590,7 +780,8 @@ EGLBoolean eglMakeCurrent(  EGLDisplay dpy, EGLSurface draw,
         }
     } else {
         // this will ALOGE the error
-        result = setError(c->cnx->egl.eglGetError(), EGL_FALSE);
+        egl_connection_t* const cnx = &gEGLImpl;
+        result = setError(cnx->egl.eglGetError(), EGL_FALSE);
     }
     return result;
 }
@@ -637,7 +828,7 @@ EGLSurface eglGetCurrentSurface(EGLint readdraw)
         if (!c) return setError(EGL_BAD_CONTEXT, EGL_NO_SURFACE);
         switch (readdraw) {
             case EGL_READ: return c->read;
-            case EGL_DRAW: return c->draw;            
+            case EGL_DRAW: return c->draw;
             default: return setError(EGL_BAD_PARAMETER, EGL_NO_SURFACE);
         }
     }
@@ -695,6 +886,20 @@ EGLint eglGetError(void)
     return err;
 }
 
+static __eglMustCastToProperFunctionPointerType findBuiltinGLWrapper(
+        const char* procname) {
+    const egl_connection_t* cnx = &gEGLImpl;
+    void* proc = NULL;
+
+    proc = dlsym(cnx->libGles2, procname);
+    if (proc) return (__eglMustCastToProperFunctionPointerType)proc;
+
+    proc = dlsym(cnx->libGles1, procname);
+    if (proc) return (__eglMustCastToProperFunctionPointerType)proc;
+
+    return NULL;
+}
+
 __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
 {
     // eglGetProcAddress() could be the very first function called
@@ -708,20 +913,16 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
         return  NULL;
     }
 
-    // These extensions should not be exposed to applications. They're used
-    // internally by the Android EGL layer.
-    if (!strcmp(procname, "eglSetBlobCacheFuncsANDROID") ||
-        !strcmp(procname, "eglDupNativeFenceFDANDROID") ||
-        !strcmp(procname, "eglWaitSyncANDROID") ||
-        !strcmp(procname, "eglHibernateProcessIMG") ||
-        !strcmp(procname, "eglAwakenProcessIMG")) {
+    if (FILTER_EXTENSIONS(procname)) {
         return NULL;
     }
 
     __eglMustCastToProperFunctionPointerType addr;
-    addr = findProcAddress(procname, sExtentionMap, NELEM(sExtentionMap));
+    addr = findProcAddress(procname, sExtensionMap, NELEM(sExtensionMap));
     if (addr) return addr;
 
+    addr = findBuiltinGLWrapper(procname);
+    if (addr) return addr;
 
     // this protects accesses to sGLExtentionMap and sGLExtentionSlot
     pthread_mutex_lock(&sExtensionMapMutex);
@@ -760,8 +961,8 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
 
             egl_connection_t* const cnx = &gEGLImpl;
             if (cnx->dso && cnx->egl.eglGetProcAddress) {
-                found = true;
                 // Extensions are independent of the bound context
+                addr =
                 cnx->hooks[egl_connection_t::GLESv1_INDEX]->ext.extensions[slot] =
                 cnx->hooks[egl_connection_t::GLESv2_INDEX]->ext.extensions[slot] =
 #if EGL_TRACE
@@ -769,6 +970,7 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
                 gHooksTrace.ext.extensions[slot] =
 #endif
                         cnx->egl.eglGetProcAddress(procname);
+                if (addr) found = true;
             }
 
             if (found) {
@@ -858,11 +1060,41 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface draw)
         return setError(EGL_BAD_SURFACE, EGL_FALSE);
 
 #if EGL_TRACE
-    if (gEGLDebugLevel > 0)
+    gl_hooks_t const *trace_hooks = getGLTraceThreadSpecific();
+    if (getEGLDebugLevel() > 0) {
+        if (trace_hooks == NULL) {
+            if (GLTrace_start() < 0) {
+                ALOGE("Disabling Tracer for OpenGL ES");
+                setEGLDebugLevel(0);
+            } else {
+                // switch over to the trace version of hooks
+                EGLContext ctx = egl_tls_t::getContext();
+                egl_context_t * const c = get_context(ctx);
+                if (c) {
+                    setGLHooksThreadSpecific(c->cnx->hooks[c->version]);
+                    GLTrace_eglMakeCurrent(c->version, c->cnx->hooks[c->version], ctx);
+                }
+            }
+        }
+
         GLTrace_eglSwapBuffers(dpy, draw);
+    } else if (trace_hooks != NULL) {
+        // tracing is now disabled, so switch back to the non trace version
+        EGLContext ctx = egl_tls_t::getContext();
+        egl_context_t * const c = get_context(ctx);
+        if (c) setGLHooksThreadSpecific(c->cnx->hooks[c->version]);
+        GLTrace_stop();
+    }
 #endif
 
     egl_surface_t const * const s = get_surface(draw);
+
+    if (CC_UNLIKELY(dp->traceGpuCompletion)) {
+        EGLSyncKHR sync = eglCreateSyncKHR(dpy, EGL_SYNC_FENCE_KHR, NULL);
+        if (sync != EGL_NO_SYNC_KHR) {
+            FrameCompletionThread::queueSync(sync);
+        }
+    }
 
     if (CC_UNLIKELY(dp->finishOnSwap)) {
         uint32_t pixel;
@@ -874,19 +1106,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface draw)
         }
     }
 
-    EGLBoolean result = s->cnx->egl.eglSwapBuffers(dp->disp.dpy, s->surface);
-
-    if (CC_UNLIKELY(dp->traceGpuCompletion)) {
-        EGLSyncKHR sync = EGL_NO_SYNC_KHR;
-        {
-            sync = eglCreateSyncKHR(dpy, EGL_SYNC_FENCE_KHR, NULL);
-        }
-        if (sync != EGL_NO_SYNC_KHR) {
-            FrameCompletionThread::queueSync(sync);
-        }
-    }
-
-    return result;
+    return s->cnx->egl.eglSwapBuffers(dp->disp.dpy, s->surface);
 }
 
 EGLBoolean eglCopyBuffers(  EGLDisplay dpy, EGLSurface surface,
@@ -921,12 +1141,29 @@ const char* eglQueryString(EGLDisplay dpy, EGLint name)
             return dp->getExtensionString();
         case EGL_CLIENT_APIS:
             return dp->getClientApiString();
-        case EGL_VERSION_HW_ANDROID:
-            return dp->disp.queryString.version;
     }
     return setError(EGL_BAD_PARAMETER, (const char *)0);
 }
 
+EGLAPI const char* eglQueryStringImplementationANDROID(EGLDisplay dpy, EGLint name)
+{
+    clearError();
+
+    const egl_display_ptr dp = validate_display(dpy);
+    if (!dp) return (const char *) NULL;
+
+    switch (name) {
+        case EGL_VENDOR:
+            return dp->disp.queryString.vendor;
+        case EGL_VERSION:
+            return dp->disp.queryString.version;
+        case EGL_EXTENSIONS:
+            return dp->disp.queryString.extensions;
+        case EGL_CLIENT_APIS:
+            return dp->disp.queryString.clientApi;
+    }
+    return setError(EGL_BAD_PARAMETER, (const char *)0);
+}
 
 // ----------------------------------------------------------------------------
 // EGL 1.1
@@ -1068,6 +1305,11 @@ EGLBoolean eglReleaseThread(void)
 {
     clearError();
 
+#if EGL_TRACE
+    if (getEGLDebugLevel() > 0)
+        GLTrace_eglReleaseThread();
+#endif
+
     // If there is context bound to the thread, release it
     egl_display_t::loseCurrent(get_context(getContext()));
 
@@ -1075,12 +1317,7 @@ EGLBoolean eglReleaseThread(void)
     if (cnx->dso && cnx->egl.eglReleaseThread) {
         cnx->egl.eglReleaseThread();
     }
-
     egl_tls_t::clearTLS();
-#if EGL_TRACE
-    if (gEGLDebugLevel > 0)
-        GLTrace_eglReleaseThread();
-#endif
     return EGL_TRUE;
 }
 
@@ -1171,11 +1408,12 @@ EGLBoolean eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR img)
     const egl_display_ptr dp = validate_display(dpy);
     if (!dp) return EGL_FALSE;
 
+    EGLBoolean result = EGL_FALSE;
     egl_connection_t* const cnx = &gEGLImpl;
     if (cnx->dso && cnx->egl.eglDestroyImageKHR) {
-        cnx->egl.eglDestroyImageKHR(dp->disp.dpy, img);
+        result = cnx->egl.eglDestroyImageKHR(dp->disp.dpy, img);
     }
-    return EGL_TRUE;
+    return result;
 }
 
 // ----------------------------------------------------------------------------
@@ -1209,6 +1447,21 @@ EGLBoolean eglDestroySyncKHR(EGLDisplay dpy, EGLSyncKHR sync)
     egl_connection_t* const cnx = &gEGLImpl;
     if (cnx->dso && cnx->egl.eglDestroySyncKHR) {
         result = cnx->egl.eglDestroySyncKHR(dp->disp.dpy, sync);
+    }
+    return result;
+}
+
+EGLBoolean eglSignalSyncKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLenum mode) {
+    clearError();
+
+    const egl_display_ptr dp = validate_display(dpy);
+    if (!dp) return EGL_FALSE;
+
+    EGLBoolean result = EGL_FALSE;
+    egl_connection_t* const cnx = &gEGLImpl;
+    if (cnx->dso && cnx->egl.eglSignalSyncKHR) {
+        result = cnx->egl.eglSignalSyncKHR(
+                dp->disp.dpy, sync, mode);
     }
     return result;
 }
@@ -1248,6 +1501,22 @@ EGLBoolean eglGetSyncAttribKHR(EGLDisplay dpy, EGLSyncKHR sync,
 }
 
 // ----------------------------------------------------------------------------
+// EGL_EGLEXT_VERSION 15
+// ----------------------------------------------------------------------------
+
+EGLint eglWaitSyncKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint flags) {
+    clearError();
+    const egl_display_ptr dp = validate_display(dpy);
+    if (!dp) return EGL_FALSE;
+    EGLint result = EGL_FALSE;
+    egl_connection_t* const cnx = &gEGLImpl;
+    if (cnx->dso && cnx->egl.eglWaitSyncKHR) {
+        result = cnx->egl.eglWaitSyncKHR(dp->disp.dpy, sync, flags);
+    }
+    return result;
+}
+
+// ----------------------------------------------------------------------------
 // ANDROID extensions
 // ----------------------------------------------------------------------------
 
@@ -1266,19 +1535,65 @@ EGLint eglDupNativeFenceFDANDROID(EGLDisplay dpy, EGLSyncKHR sync)
     return result;
 }
 
-EGLint eglWaitSyncANDROID(EGLDisplay dpy, EGLSyncKHR sync, EGLint flags)
+EGLBoolean eglPresentationTimeANDROID(EGLDisplay dpy, EGLSurface surface,
+        EGLnsecsANDROID time)
 {
     clearError();
 
     const egl_display_ptr dp = validate_display(dpy);
-    if (!dp) return EGL_NO_NATIVE_FENCE_FD_ANDROID;
+    if (!dp) {
+        return EGL_FALSE;
+    }
+
+    SurfaceRef _s(dp.get(), surface);
+    if (!_s.get()) {
+        setError(EGL_BAD_SURFACE, EGL_FALSE);
+        return EGL_FALSE;
+    }
+
+    egl_surface_t const * const s = get_surface(surface);
+    native_window_set_buffers_timestamp(s->win.get(), time);
+
+    return EGL_TRUE;
+}
+
+// ----------------------------------------------------------------------------
+// QCOM extensions
+// ----------------------------------------------------------------------------
+#ifdef __cplusplus
+extern "C" {
+#endif
+EGLAPI EGLBoolean eglGpuPerfHintQCOM(EGLDisplay dpy, EGLContext ctx, EGLint *attrib_list);
+#ifdef __cplusplus
+}
+#endif
+
+EGLBoolean eglGpuPerfHintQCOM(EGLDisplay dpy, EGLContext ctx, EGLint *attrib_list)
+{
+    clearError();
+
+    const egl_display_ptr dp = validate_display(dpy);
+    if (!dp) return EGL_FALSE;
+
+    ContextRef _c(dp.get(), ctx);
+    if ((ctx != EGL_NO_CONTEXT) && !_c.get()) {
+        // ctx is not valid
+        return setError(EGL_BAD_CONTEXT, EGL_FALSE);
+    }
+
+    egl_context_t * c = NULL;
+    c = get_context(ctx);
 
     EGLint result = EGL_FALSE;
     egl_connection_t* const cnx = &gEGLImpl;
-    if (cnx->dso && cnx->egl.eglWaitSyncANDROID) {
-        result = cnx->egl.eglWaitSyncANDROID(dp->disp.dpy, sync, flags);
+    if (cnx->dso && cnx->egl.eglGpuPerfHintQCOM) {
+        result = cnx->egl.eglGpuPerfHintQCOM(
+                dp->disp.dpy,
+                c->context,
+                attrib_list);
     }
     return result;
+
 }
 
 // ----------------------------------------------------------------------------

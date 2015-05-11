@@ -83,8 +83,8 @@ Transform Transform::operator * (const Transform& rhs) const
     return r;
 }
 
-float const* Transform::operator [] (int i) const {
-    return mMatrix[i].v;
+const vec3& Transform::operator [] (size_t i) const {
+    return mMatrix[i];
 }
 
 bool Transform::transformed() const {
@@ -173,7 +173,7 @@ status_t Transform::set(uint32_t flags, float w, float h)
     return NO_ERROR;
 }
 
-Transform::vec2 Transform::transform(const vec2& v) const {
+vec2 Transform::transform(const vec2& v) const {
     vec2 r;
     const mat33& M(mMatrix);
     r[0] = M[0][0]*v[0] + M[1][0]*v[1] + M[2][0];
@@ -181,7 +181,7 @@ Transform::vec2 Transform::transform(const vec2& v) const {
     return r;
 }
 
-Transform::vec3 Transform::transform(const vec3& v) const {
+vec3 Transform::transform(const vec3& v) const {
     vec3 r;
     const mat33& M(mMatrix);
     r[0] = M[0][0]*v[0] + M[1][0]*v[1] + M[2][0]*v[2];
@@ -190,12 +190,9 @@ Transform::vec3 Transform::transform(const vec3& v) const {
     return r;
 }
 
-void Transform::transform(float* point, int x, int y) const
+vec2 Transform::transform(int x, int y) const
 {
-    vec2 v(x, y);
-    v = transform(v);
-    point[0] = v[0];
-    point[1] = v[1];
+    return transform(vec2(x,y));
 }
 
 Rect Transform::makeBounds(int w, int h) const
@@ -296,6 +293,44 @@ uint32_t Transform::type() const
             mType |= TRANSLATE;
     }
     return mType;
+}
+
+Transform Transform::inverse() const {
+    // our 3x3 matrix is always of the form of a 2x2 transformation
+    // followed by a translation: T*M, therefore:
+    // (T*M)^-1 = M^-1 * T^-1
+    Transform result;
+    if (mType <= TRANSLATE) {
+        // 1 0 x
+        // 0 1 y
+        // 0 0 1
+        result = *this;
+        result.mMatrix[2][0] = -result.mMatrix[2][0];
+        result.mMatrix[2][1] = -result.mMatrix[2][1];
+    } else {
+        // a c x
+        // b d y
+        // 0 0 1
+        const mat33& M(mMatrix);
+        const float a = M[0][0];
+        const float b = M[1][0];
+        const float c = M[0][1];
+        const float d = M[1][1];
+        const float x = M[2][0];
+        const float y = M[2][1];
+
+        Transform R, T;
+        const float idet = 1.0 / (a*d - b*c);
+        R.mMatrix[0][0] =  d*idet;    R.mMatrix[0][1] = -c*idet;
+        R.mMatrix[1][0] = -b*idet;    R.mMatrix[1][1] =  a*idet;
+        R.mType = mType &= ~TRANSLATE;
+
+        T.mMatrix[2][0] = -x;
+        T.mMatrix[2][1] = -y;
+        T.mType = TRANSLATE;
+        result =  R * T;
+    }
+    return result;
 }
 
 uint32_t Transform::getType() const {
