@@ -639,6 +639,7 @@ void IPCThreadState::decWeakHandle(int32_t handle)
 
 status_t IPCThreadState::attemptIncStrongHandle(int32_t handle)
 {
+#if HAS_BC_ATTEMPT_ACQUIRE
     LOG_REMOTEREFS("IPCThreadState::attemptIncStrongHandle(%d)\n", handle);
     mOut.writeInt32(BC_ATTEMPT_ACQUIRE);
     mOut.writeInt32(0); // xxx was thread priority
@@ -653,6 +654,11 @@ status_t IPCThreadState::attemptIncStrongHandle(int32_t handle)
 #endif
     
     return result;
+#else
+    (void)handle;
+    ALOGE("%s(%d): Not supported\n", __func__, handle);
+    return INVALID_OPERATION;
+#endif
 }
 
 void IPCThreadState::expungeHandle(int32_t handle, IBinder* binder)

@@ -35,6 +35,7 @@
 
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer.h>
+#include <hardware/../../../aw/venc/gralloc_priv.h>
 
 #include <android/configuration.h>
 
@@ -237,47 +238,32 @@ HWComposer::HWComposer(
         ALOGI("Using %s version %u.%u", HWC_HARDWARE_COMPOSER,
               (hwcApiVersion(mHwc) >> 24) & 0xff,
               (hwcApiVersion(mHwc) >> 16) & 0xff);
-        if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
-            if (mHwc->registerProcs) {
-                mCBContext->hwc = this;
-                mCBContext->procs.invalidate = &hook_invalidate;
-                mCBContext->procs.vsync = &hook_vsync;
-                if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1))
-                    mCBContext->procs.hotplug = &hook_hotplug;
-                else
-                    mCBContext->procs.hotplug = NULL;
-                memset(mCBContext->procs.zero, 0, sizeof(mCBContext->procs.zero));
-                mHwc->registerProcs(mHwc, &mCBContext->procs);
-            }
-        } else {
-            hwc_composer_device_t* hwc0 = reinterpret_cast<hwc_composer_device_t*>(mHwc);
-            if (hwc0->registerProcs) {
-                mCBContext->hwc = this;
-                mCBContext->procs.invalidate = &hook_invalidate;
-                mCBContext->procs.vsync = &hook_vsync;
-                memset(mCBContext->procs.zero, 0, sizeof(mCBContext->procs.zero));
-                hwc0->registerProcs(hwc0, &mCBContext->procs);
-            }
+        if (mHwc->registerProcs) {
+            mCBContext->hwc = this;
+            mCBContext->procs.invalidate = &hook_invalidate;
+            mCBContext->procs.vsync = &hook_vsync;
+            if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1))
+                mCBContext->procs.hotplug = &hook_hotplug;
+            else
+                mCBContext->procs.hotplug = NULL;
+            memset(mCBContext->procs.zero, 0, sizeof(mCBContext->procs.zero));
+            mHwc->registerProcs(mHwc, &mCBContext->procs);
         }
 
         // don't need a vsync thread if we have a hardware composer
         needVSyncThread = false;
         // always turn vsync off when we start
-        if (hwcHasVsyncEvent(mHwc)) {
-            eventControl(HWC_DISPLAY_PRIMARY, HWC_EVENT_VSYNC, 0);
-            // the number of displays we actually have depends on the
-            // hw composer version
-            if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_3)) {
-                // 1.3 adds support for virtual displays
-                mNumDisplays = MAX_HWC_DISPLAYS;
-            } else if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
-                // 1.1 adds support for multiple displays
-                mNumDisplays = NUM_BUILTIN_DISPLAYS;
-            } else {
-                mNumDisplays = 1;
-            }
+        eventControl(HWC_DISPLAY_PRIMARY, HWC_EVENT_VSYNC, 0);
+
+        // the number of displays we actually have depends on the
+        // hw composer version
+        if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_3)) {
+            // 1.3 adds support for virtual displays
+            mNumDisplays = MAX_HWC_DISPLAYS;
+        } else if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
+            // 1.1 adds support for multiple displays
+            mNumDisplays = NUM_BUILTIN_DISPLAYS;
         } else {
-            needVSyncThread = true;
             mNumDisplays = 1;
         }
     }
@@ -322,11 +308,9 @@ HWComposer::HWComposer(
         // we don't have VSYNC support, we need to fake it
         mVSyncThread = new VSyncThread(*this);
     }
-#ifdef QCOM_BSP
-    // Threshold Area to enable GPU Tiled Rect.
-    property_get("debug.hwc.gpuTiledThreshold", value, "1.9");
-    mDynThreshold = atof(value);
-#endif
+
+    mFullScreenVideo = false;
+    mMaxLayers = 0;
 }
 
 HWComposer::~HWComposer() {
@@ -362,10 +346,9 @@ void HWComposer::loadHwcModule()
         return;
     }
 
-    if (HWC_REMOVE_DEPRECATED_VERSIONS &&
-        (!hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0) ||
+    if (!hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0) ||
             hwcHeaderVersion(mHwc) < MIN_HWC_HEADER_VERSION ||
-            hwcHeaderVersion(mHwc) > HWC_HEADER_VERSION)) {
+            hwcHeaderVersion(mHwc) > HWC_HEADER_VERSION) {
         ALOGE("%s device version %#x unsupported, will not be used",
               HWC_HARDWARE_COMPOSER, mHwc->common.version);
         hwc_close_1(mHwc);
@@ -610,51 +593,38 @@ void HWComposer::eventControl(int disp, int event, int enabled) {
               event, disp, enabled);
         return;
     }
-    status_t err = NO_ERROR;
-    switch(event) {
-        case EVENT_VSYNC:
-            if (mHwc && !mDebugForceFakeVSync && hwcHasVsyncEvent(mHwc)) {
-                if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
-                    // NOTE: we use our own internal lock here because we have to
-                    // call into the HWC with the lock held, and we want to make
-                    // sure that even if HWC blocks (which it shouldn't), it won't
-                    // affect other threads.
-                    Mutex::Autolock _l(mEventControlLock);
-                    const int32_t eventBit = 1UL << event;
-                    const int32_t newValue = enabled ? eventBit : 0;
-                    const int32_t oldValue = mDisplayData[disp].events & eventBit;
-                    if (newValue != oldValue) {
-                        ATRACE_CALL();
-                        err = mHwc->eventControl(mHwc, disp, event, enabled);
-                        if (!err) {
-                            int32_t& events(mDisplayData[disp].events);
-                            events = (events & ~eventBit) | newValue;
-                        }
-                    }
-                } else {
-                    err = hwcEventControl(mHwc, disp, event, enabled);
-                }
-                // error here should not happen -- not sure what we should
-                // do if it does.
-                ALOGE_IF(err, "eventControl(%d, %d) failed %s",
-                         event, enabled, strerror(-err));
-            }
-
-            if (err == NO_ERROR && mVSyncThread != NULL) {
-                mVSyncThread->setEnabled(enabled);
-            }
-            break;
-        case EVENT_ORIENTATION:
-            // Orientation event
-            if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0))
-                err = hwcEventControl(mHwc, disp, event, enabled);
-            break;
-        default:
-            ALOGW("eventControl got unexpected event %d (disp=%d en=%d)",
-                    event, disp, enabled);
-            break;
+    if (event != EVENT_VSYNC) {
+        /*ALOGW("eventControl got unexpected event %d (disp=%d en=%d)",
+              event, disp, enabled);*/
+        return;
     }
-    return;
+    status_t err = NO_ERROR;
+    if (mHwc && !mDebugForceFakeVSync) {
+        // NOTE: we use our own internal lock here because we have to call
+        // into the HWC with the lock held, and we want to make sure
+        // that even if HWC blocks (which it shouldn't), it won't
+        // affect other threads.
+        Mutex::Autolock _l(mEventControlLock);
+        const int32_t eventBit = 1UL << event;
+        const int32_t newValue = enabled ? eventBit : 0;
+        const int32_t oldValue = mDisplayData[disp].events & eventBit;
+        if (newValue != oldValue) {
+            ATRACE_CALL();
+            err = mHwc->eventControl(mHwc, disp, event, enabled);
+            if (!err) {
+                int32_t& events(mDisplayData[disp].events);
+                events = (events & ~eventBit) | newValue;
+            }
+        }
+        // error here should not happen -- not sure what we should
+        // do if it does.
+        ALOGE_IF(err, "eventControl(%d, %d) failed %s",
+                event, enabled, strerror(-err));
+    }
+
+    if (err == NO_ERROR && mVSyncThread != NULL) {
+        mVSyncThread->setEnabled(enabled);
+    }
 }
 
 status_t HWComposer::createWorkList(int32_t id, size_t numLayers) {
@@ -669,11 +639,10 @@ status_t HWComposer::createWorkList(int32_t id, size_t numLayers) {
             numLayers++;
         }
         if (disp.capacity < numLayers || disp.list == NULL) {
-            size_t size = sizeofHwcLayerList(mHwc, numLayers);
+            size_t size = sizeof(hwc_display_contents_1_t)
+                    + numLayers * sizeof(hwc_layer_1_t);
             free(disp.list);
             disp.list = (hwc_display_contents_1_t*)malloc(size);
-            if(disp.list == NULL)
-                return NO_MEMORY;
             disp.capacity = numLayers;
         }
         if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
@@ -702,11 +671,9 @@ status_t HWComposer::createWorkList(int32_t id, size_t numLayers) {
             disp.framebufferTarget->releaseFenceFd = -1;
             disp.framebufferTarget->planeAlpha = 0xFF;
         }
-        if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
-            disp.list->retireFenceFd = -1;
-        }
-        hwcFlags(mHwc, disp.list) = HWC_GEOMETRY_CHANGED;
-        hwcNumHwLayers(mHwc, disp.list) = numLayers;
+        disp.list->retireFenceFd = -1;
+        disp.list->flags = HWC_GEOMETRY_CHANGED;
+        disp.list->numHwLayers = numLayers;
     }
     return NO_ERROR;
 }
@@ -738,7 +705,9 @@ status_t HWComposer::setFramebufferTarget(int32_t id,
 }
 
 status_t HWComposer::prepare() {
-    Mutex::Autolock _l(mDrawLock);
+    int width = 0;
+    int height = 0;
+    int numLayers = 0;
     for (size_t i=0 ; i<mNumDisplays ; i++) {
         DisplayData& disp(mDisplayData[i]);
         if (disp.framebufferTarget) {
@@ -751,7 +720,7 @@ status_t HWComposer::prepare() {
         }
         if (!disp.connected && disp.list != NULL) {
             ALOGW("WARNING: disp %d: connected, non-null list, layers=%d",
-                    i, hwcNumHwLayers(mHwc, disp.list));
+                  i, disp.list->numHwLayers);
         }
         mLists[i] = disp.list;
         if (mLists[i]) {
@@ -762,84 +731,58 @@ status_t HWComposer::prepare() {
                 // garbage data to catch improper use
                 mLists[i]->dpy = (hwc_display_t)0xDEADBEEF;
                 mLists[i]->sur = (hwc_surface_t)0xDEADBEEF;
-            } else if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
+            } else {
                 mLists[i]->dpy = EGL_NO_DISPLAY;
                 mLists[i]->sur = EGL_NO_SURFACE;
             }
         }
     }
-    int err = hwcPrepare(mHwc, mNumDisplays, mLists);
+
+    int err = mHwc->prepare(mHwc, mNumDisplays, mLists);
     ALOGE_IF(err, "HWComposer: prepare failed (%s)", strerror(-err));
+#if 1
+    bool bFullScreenVideo = false;
+    numLayers = mLists[HWC_DISPLAY_PRIMARY]->numHwLayers;
+    if(numLayers <= 3)
+    {
+        hwc_layer_1_t& l = mLists[HWC_DISPLAY_PRIMARY]->hwLayers[0];
+        private_handle_t *pHandle = (private_handle_t *)l.handle;
+        if(pHandle && 
+            (pHandle->format == HAL_PIXEL_FORMAT_YCrCb_420_SP || pHandle->format == HAL_PIXEL_FORMAT_YV12))
+        {
+            bFullScreenVideo = true;
+            if(mMaxLayers == 0)
+                mMaxLayers = numLayers;
+        }
+    }
+    if((bFullScreenVideo != mFullScreenVideo) || (numLayers < mMaxLayers))
+    {
+        char value[4];
+        mFullScreenVideo = bFullScreenVideo;
+        mMaxLayers = numLayers;
 
+        snprintf(value, sizeof(value), "%d", mMaxLayers - 1);
+        property_set("sys.boost_up_perf.layers", value);
+    }
+#endif
     if (err == NO_ERROR) {
-        if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
-            // here we're just making sure that "skip" layers are set
-            // to HWC_FRAMEBUFFER and we're also counting how many layers
-            // we have of each type.
-            for (size_t i=0 ; i<mNumDisplays ; i++) {
-                DisplayData& disp(mDisplayData[i]);
-                disp.hasFbComp = false;
-                disp.hasOvComp = false;
-#ifdef QCOM_BSP
-                disp.hasBlitComp = false;
-#endif
-                if (disp.list) {
-#ifdef QCOM_BSP
-                    //GPUTILERECT
-                    prev_comp_map[i] = current_comp_map[i];
-                    current_comp_map[i].reset();
-                    current_comp_map[i].count = disp.list->numHwLayers-1;
-#endif
-                    for (size_t j=0 ; j<disp.list->numHwLayers ; j++) {
-                        hwc_layer_1_t& l = disp.list->hwLayers[j];
-
-                        //ALOGD("prepare: %d, type=%d, handle=%p",
-                        //        i, l.compositionType, l.handle);
-
-                        if ((i == DisplayDevice::DISPLAY_PRIMARY) &&
-                                    l.flags & HWC_SKIP_LAYER) {
-                            l.compositionType = HWC_FRAMEBUFFER;
-                        }
-                        if (l.compositionType == HWC_FRAMEBUFFER) {
-                            disp.hasFbComp = true;
-                        }
-                        // If the composition type is BLIT, we set this to
-                        // trigger a FLIP
-                        if(l.compositionType == HWC_BLIT) {
-                            disp.hasFbComp = true;
-#ifdef QCOM_BSP
-                            disp.hasBlitComp = true;
-#endif
-                        }
-                        if (l.compositionType == HWC_OVERLAY) {
-                            disp.hasOvComp = true;
-                        }
-#ifdef QCOM_BSP
-                        //GPUTILERECT
-                        if(l.compositionType != HWC_FRAMEBUFFER_TARGET) {
-                            current_comp_map[i].compType[j] = l.compositionType;
-                        }
-#endif
-                    }
-                    if (disp.list->numHwLayers == (disp.framebufferTarget ? 1 : 0)) {
-                        disp.hasFbComp = true;
-                    }
-                } else {
-                    disp.hasFbComp = true;
-                }
-            }
-        } else {
-            DisplayData& disp(mDisplayData[0]);
+        // here we're just making sure that "skip" layers are set
+        // to HWC_FRAMEBUFFER and we're also counting how many layers
+        // we have of each type.
+        //
+        // If there are no window layers, we treat the display has having FB
+        // composition, because SurfaceFlinger will use GLES to draw the
+        // wormhole region.
+        for (size_t i=0 ; i<mNumDisplays ; i++) {
+            DisplayData& disp(mDisplayData[i]);
             disp.hasFbComp = false;
             disp.hasOvComp = false;
-
             if (disp.list) {
-                hwc_layer_list_t* list0 = reinterpret_cast<hwc_layer_list_t*>(disp.list);
-                for (size_t i=0 ; i<hwcNumHwLayers(mHwc, disp.list) ; i++) {
-                    hwc_layer_t& l = list0->hwLayers[i];
+                for (size_t i=0 ; i<disp.list->numHwLayers ; i++) {
+                    hwc_layer_1_t& l = disp.list->hwLayers[i];
 
                     //ALOGD("prepare: %d, type=%d, handle=%p",
-                    //        j, l.compositionType, l.handle);
+                    //        i, l.compositionType, l.handle);
 
                     if (l.flags & HWC_SKIP_LAYER) {
                         l.compositionType = HWC_FRAMEBUFFER;
@@ -847,28 +790,21 @@ status_t HWComposer::prepare() {
                     if (l.compositionType == HWC_FRAMEBUFFER) {
                         disp.hasFbComp = true;
                     }
-                    // If the composition type is BLIT, we set this to
-                    // trigger a FLIP
-                    if(l.compositionType == HWC_BLIT) {
-                        disp.hasFbComp = true;
-                    }
                     if (l.compositionType == HWC_OVERLAY) {
                         disp.hasOvComp = true;
                     }
                 }
+                if (disp.list->numHwLayers == (disp.framebufferTarget ? 1 : 0)) {
+                    disp.hasFbComp = true;
+                }
+            } else {
+                disp.hasFbComp = true;
             }
         }
     }
     return (status_t)err;
 }
 
-#ifdef QCOM_BSP
-bool HWComposer::hasBlitComposition(int32_t id) const {
-    if (!mHwc || uint32_t(id) > 31 || !mAllocatedDisplayIDs.hasBit(id))
-        return false;
-    return mDisplayData[id].hasBlitComp;
-}
-#endif
 bool HWComposer::hasHwcComposition(int32_t id) const {
     if (!mHwc || uint32_t(id)>31 || !mAllocatedDisplayIDs.hasBit(id))
         return false;
@@ -900,40 +836,35 @@ sp<Fence> HWComposer::getAndResetReleaseFence(int32_t id) {
 status_t HWComposer::commit() {
     int err = NO_ERROR;
     if (mHwc) {
-        if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
-            if (!hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
-                // On version 1.0, the OpenGL ES target surface is communicated
-                // by the (dpy, sur) fields and we are guaranteed to have only
-                // a single display.
-                mLists[0]->dpy = eglGetCurrentDisplay();
-                mLists[0]->sur = eglGetCurrentSurface(EGL_DRAW);
-            }
-            for (size_t i=VIRTUAL_DISPLAY_ID_BASE; i<mNumDisplays; i++) {
-                DisplayData& disp(mDisplayData[i]);
-                if (disp.outbufHandle) {
-                    mLists[i]->outbuf = disp.outbufHandle;
-                    mLists[i]->outbufAcquireFenceFd =
-                        disp.outbufAcquireFence->dup();
-                }
-            }
-            err = mHwc->set(mHwc, mNumDisplays, mLists);
-        } else {
-            err = hwcSet(mHwc, eglGetCurrentDisplay(), eglGetCurrentSurface(EGL_DRAW), mNumDisplays,
-                    const_cast<hwc_display_contents_1_t**>(mLists));
+        if (!hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
+            // On version 1.0, the OpenGL ES target surface is communicated
+            // by the (dpy, sur) fields and we are guaranteed to have only
+            // a single display.
+            mLists[0]->dpy = eglGetCurrentDisplay();
+            mLists[0]->sur = eglGetCurrentSurface(EGL_DRAW);
         }
+
+        for (size_t i=VIRTUAL_DISPLAY_ID_BASE; i<mNumDisplays; i++) {
+            DisplayData& disp(mDisplayData[i]);
+            if (disp.outbufHandle) {
+                mLists[i]->outbuf = disp.outbufHandle;
+                mLists[i]->outbufAcquireFenceFd =
+                        disp.outbufAcquireFence->dup();
+            }
+        }
+
+        err = mHwc->set(mHwc, mNumDisplays, mLists);
 
         for (size_t i=0 ; i<mNumDisplays ; i++) {
             DisplayData& disp(mDisplayData[i]);
             disp.lastDisplayFence = disp.lastRetireFence;
             disp.lastRetireFence = Fence::NO_FENCE;
             if (disp.list) {
-                if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
-                    if (disp.list->retireFenceFd != -1) {
-                        disp.lastRetireFence = new Fence(disp.list->retireFenceFd);
-                        disp.list->retireFenceFd = -1;
-                    }
+                if (disp.list->retireFenceFd != -1) {
+                    disp.lastRetireFence = new Fence(disp.list->retireFenceFd);
+                    disp.list->retireFenceFd = -1;
                 }
-                hwcFlags(mHwc, disp.list) &= ~HWC_GEOMETRY_CHANGED;
+                disp.list->flags &= ~HWC_GEOMETRY_CHANGED;
             }
         }
     }
@@ -943,10 +874,8 @@ status_t HWComposer::commit() {
 status_t HWComposer::release(int disp) {
     LOG_FATAL_IF(disp >= VIRTUAL_DISPLAY_ID_BASE);
     if (mHwc) {
-        if (hwcHasVsyncEvent(mHwc)) {
-            eventControl(disp, HWC_EVENT_VSYNC, 0);
-        }
-        return (status_t)hwcBlank(mHwc, disp, 1);
+        eventControl(disp, HWC_EVENT_VSYNC, 0);
+        return (status_t)mHwc->blank(mHwc, disp, 1);
     }
     return NO_ERROR;
 }
@@ -954,7 +883,7 @@ status_t HWComposer::release(int disp) {
 status_t HWComposer::acquire(int disp) {
     LOG_FATAL_IF(disp >= VIRTUAL_DISPLAY_ID_BASE);
     if (mHwc) {
-        return (status_t)hwcBlank(mHwc, disp, 0);
+        return (status_t)mHwc->blank(mHwc, disp, 0);
     }
     return NO_ERROR;
 }
@@ -1305,22 +1234,6 @@ public:
         SharedBuffer const* sb = reg.getSharedBuffer(&visibleRegion.numRects);
         visibleRegion.rects = reinterpret_cast<hwc_rect_t const *>(sb->data());
     }
-#ifdef QCOM_BSP
-    virtual void setDirtyRect(const Rect& dirtyRect) {
-        Rect srcCrop;
-        srcCrop.left = int(ceilf(getLayer()->sourceCropf.left));
-        srcCrop.right = int(ceilf(getLayer()->sourceCropf.right));
-        srcCrop.top = int(ceilf(getLayer()->sourceCropf.top));
-        srcCrop.bottom = int(ceilf(getLayer()->sourceCropf.bottom));
-
-        /* DirtyRect is generated for the full buffer resolution. Crop the value
-         * for the hwc_layer_1_t::sourceCrop resolution before sending to HWC.
-         */
-        Rect finalDR;
-        srcCrop.intersect(dirtyRect, &finalDR);
-        getLayer()->dirtyRect = reinterpret_cast<hwc_rect_t const&>(finalDR);
-    }
-#endif
     virtual void setBuffer(const sp<GraphicBuffer>& buffer) {
         if (buffer == 0 || buffer->handle == 0) {
             getLayer()->compositionType = HWC_FRAMEBUFFER;
@@ -1352,15 +1265,10 @@ HWComposer::LayerListIterator HWComposer::getLayerIterator(int32_t id, size_t in
         return LayerListIterator();
     }
     const DisplayData& disp(mDisplayData[id]);
-    if (!mHwc || !disp.list || index > hwcNumHwLayers(mHwc,disp.list)) {
+    if (!mHwc || !disp.list || index > disp.list->numHwLayers) {
         return LayerListIterator();
     }
-    if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_0)) {
-       return LayerListIterator(new HWCLayerVersion1(mHwc, disp.list->hwLayers), index);
-    } else {
-       hwc_layer_list_t* list0 = reinterpret_cast<hwc_layer_list_t*>(disp.list);
-       return LayerListIterator(new HWCLayerVersion0(list0->hwLayers), index);
-    }
+    return LayerListIterator(new HWCLayerVersion1(mHwc, disp.list->hwLayers), index);
 }
 
 /*
@@ -1378,7 +1286,7 @@ HWComposer::LayerListIterator HWComposer::end(int32_t id) {
     if (uint32_t(id) <= 31 && mAllocatedDisplayIDs.hasBit(id)) {
         const DisplayData& disp(mDisplayData[id]);
         if (mHwc && disp.list) {
-            numLayers = hwcNumHwLayers(mHwc, disp.list);
+            numLayers = disp.list->numHwLayers;
             if (hwcHasApiVersion(mHwc, HWC_DEVICE_API_VERSION_1_1)) {
                 // with HWC 1.1, the last layer is always the HWC_FRAMEBUFFER_TARGET,
                 // which we ignore when iterating through the layer list.
@@ -1393,7 +1301,6 @@ HWComposer::LayerListIterator HWComposer::end(int32_t id) {
 }
 
 void HWComposer::dump(String8& result) const {
-    Mutex::Autolock _l(mDrawLock);
     if (mHwc) {
         result.appendFormat("Hardware Composer state (version %8x):\n", hwcApiVersion(mHwc));
         result.appendFormat("  mDebugForceFakeVSync=%d\n", mDebugForceFakeVSync);
@@ -1479,14 +1386,21 @@ void HWComposer::dump(String8& result) const {
             }
         }
     }
-    if (mHwc) {
+
+    if (mHwc && mHwc->dump) {
         const size_t SIZE = 4096;
         char buffer[SIZE];
-        hwcDump(mHwc, buffer, SIZE);
+        mHwc->dump(mHwc, buffer, SIZE);
         result.append(buffer);
     }
 }
+int HWComposer::setDisplayParameter(int cmd, int disp, int para0, int para1) const {
+    if (mHwc) {
+        return mHwc->setParameter(mHwc, cmd, disp, para0, para1);
+    }
 
+    return NO_INIT;
+}
 // ---------------------------------------------------------------------------
 
 HWComposer::VSyncThread::VSyncThread(HWComposer& hwc)
@@ -1536,7 +1450,7 @@ bool HWComposer::VSyncThread::threadLoop() {
         err = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &spec, NULL);
     } while (err<0 && errno == EINTR);
 
-    if (err == 0 && mEnabled) {
+    if (err == 0) {
         mHwc.mEventHandler.onVSyncReceived(0, next_vsync);
     }
 
@@ -1560,173 +1474,5 @@ HWComposer::DisplayData::~DisplayData() {
     free(list);
 }
 
-#ifdef QCOM_BSP
-//======================== GPU TiledRect/DR changes =====================
-bool HWComposer::areVisibleRegionsOverlapping(int32_t id ) {
-    if (!mHwc || uint32_t(id)>31 || !mAllocatedDisplayIDs.hasBit(id))
-        return false;
-    const Vector< sp<Layer> >& currentLayers  =
-            mFlinger->getLayerSortedByZForHwcDisplay(id);
-    size_t count = currentLayers.size();
-    Region consolidatedVisibleRegion;
-
-    for (size_t i=0; i<count; i++) {
-        //If there are any overlapping visible regions, disable GPUTileRect
-        if(!consolidatedVisibleRegion.intersect(
-                 currentLayers[i]->visibleRegion).isEmpty()){
-            return true;
-        }
-        consolidatedVisibleRegion.orSelf(currentLayers[i]->visibleRegion);
-    }
-    return false;
-}
-
-bool HWComposer::canHandleOverlapArea(int32_t id, Rect unionDr) {
-    DisplayData& disp(mDisplayData[id]);
-    float layerAreaSum = 0;
-    float drArea = ((unionDr.right-unionDr.left)* (unionDr.bottom-unionDr.top));
-    hwc_layer_1_t& fbLayer = disp.list->hwLayers[disp.list->numHwLayers-1];
-    hwc_rect_t fbDisplayFrame  = fbLayer.displayFrame;
-    float fbLayerArea = ((fbDisplayFrame.right - fbDisplayFrame.left)*
-              (fbDisplayFrame.bottom - fbDisplayFrame.top));
-
-    //Compute sum of the Areas of FB layers intersecting with Union Dirty Rect
-    for (size_t i=0; i<disp.list->numHwLayers-1; i++) {
-        hwc_layer_1_t& layer = disp.list->hwLayers[i];
-        if(layer.compositionType != HWC_FRAMEBUFFER)
-           continue;
-
-        hwc_rect_t displayFrame  = layer.displayFrame;
-        Rect df(displayFrame.left, displayFrame.top,
-              displayFrame.right, displayFrame.bottom);
-        Rect df_dirty;
-        df_dirty.clear();
-        if(df.intersect(unionDr, &df_dirty))
-            layerAreaSum += ((df_dirty.right - df_dirty.left)*
-                  (df_dirty.bottom - df_dirty.top));
-    }
-    ALOGD_IF(GPUTILERECT_DEBUG,"GPUTileRect: overlap/FB : %f",
-           (layerAreaSum/fbLayerArea));
-    // Return false, if the sum of layer Areas intersecting with union Dr is
-    // more than the threshold as we are not getting better performance.
-    return (mDynThreshold > (layerAreaSum/fbLayerArea));
-}
-
-bool HWComposer::needsScaling(int32_t id) {
-    if (!mHwc || uint32_t(id)>31 || !mAllocatedDisplayIDs.hasBit(id))
-        return false;
-    DisplayData& disp(mDisplayData[id]);
-    for (size_t i=0; i<disp.list->numHwLayers-1; i++) {
-        int dst_w, dst_h, src_w, src_h;
-        hwc_layer_1_t& layer = disp.list->hwLayers[i];
-        hwc_rect_t displayFrame  = layer.displayFrame;
-
-        hwc_rect_t sourceCropI = {0,0,0,0};
-        sourceCropI.left = int(ceilf(layer.sourceCropf.left));
-        sourceCropI.top = int(ceilf(layer.sourceCropf.top));
-        sourceCropI.right = int(floorf(layer.sourceCropf.right));
-        sourceCropI.bottom = int(floorf(layer.sourceCropf.bottom));
-
-        dst_w = displayFrame.right - displayFrame.left;
-        dst_h = displayFrame.bottom - displayFrame.top;
-        src_w = sourceCropI.right - sourceCropI.left;
-        src_h = sourceCropI.bottom - sourceCropI.top;
-
-        if(((src_w != dst_w) || (src_h != dst_h))) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void HWComposer::computeUnionDirtyRect(int32_t id, Rect& unionDirtyRect) {
-    if (!mHwc || uint32_t(id)>31 || !mAllocatedDisplayIDs.hasBit(id))
-        return;
-    const Vector< sp<Layer> >& currentLayers =
-            mFlinger->getLayerSortedByZForHwcDisplay(id);
-    size_t count = currentLayers.size();
-    Region unionDirtyRegion;
-    DisplayData& disp(mDisplayData[id]);
-
-    // Find UnionDr of all layers
-    for (size_t i=0; i<count; i++) {
-        hwc_layer_1_t& l = disp.list->hwLayers[i];
-        Rect dr;
-        dr.clear();
-        if((l.compositionType == HWC_FRAMEBUFFER) &&
-              currentLayers[i]->hasNewFrame()) {
-            dr = Rect(l.dirtyRect.left, l.dirtyRect.top, l.dirtyRect.right,
-                  l.dirtyRect.bottom);
-            hwc_rect_t dst = l.displayFrame;
-
-            //Map dirtyRect to layer destination before using
-            hwc_rect_t src = {0,0,0,0};
-            src.left = int(ceilf(l.sourceCropf.left));
-            src.top = int(ceilf(l.sourceCropf.top));
-            src.right = int(floorf(l.sourceCropf.right));
-            src.bottom = int(floorf(l.sourceCropf.bottom));
-
-            int x_off = dst.left - src.left;
-            int y_off = dst.top - src.top;
-            dr = dr.offsetBy(x_off, y_off);
-            unionDirtyRegion = unionDirtyRegion.orSelf(dr);
-        }
-    }
-    unionDirtyRect = unionDirtyRegion.getBounds();
-}
-bool HWComposer::isCompositionMapChanged(int32_t id) {
-    if (prev_comp_map[id] == current_comp_map[id]) {
-        return false;
-    }
-    return true;
-}
-bool HWComposer::isGeometryChanged(int32_t id) {
-    if (!mHwc || uint32_t(id)>31 || !mAllocatedDisplayIDs.hasBit(id))
-        return false;
-    DisplayData& disp(mDisplayData[id]);
-    return ( disp.list->flags & HWC_GEOMETRY_CHANGED );
-}
-/* Finds if we can enable DR optimization for GpuComp
- * 1. return false if geometry is changed
- * 2. if overlapping visible regions present.
- * 3. Compute a Union Dirty Rect to operate on. */
-bool HWComposer::canUseTiledDR(int32_t id, Rect& unionDr ){
-    if (!mHwc || uint32_t(id)>31 || !mAllocatedDisplayIDs.hasBit(id))
-        return false;
-
-    bool status = true;
-    if (isGeometryChanged(id)) {
-        ALOGD_IF(GPUTILERECT_DEBUG, "GPUTileRect : geometrychanged, disable");
-        status = false;
-    } else if ( hasBlitComposition(id)) {
-        ALOGD_IF(GPUTILERECT_DEBUG, "GPUTileRect: Blit comp, disable");
-        status = false;
-    } else if ( isCompositionMapChanged(id)) {
-        ALOGD_IF(GPUTILERECT_DEBUG, "GPUTileRect: comp map changed, disable");
-        status = false;
-    } else if (needsScaling(id)) {
-       /* Do Not use TiledDR optimization, if layers need scaling */
-       ALOGD_IF(GPUTILERECT_DEBUG, "GPUTileRect: Layers need scaling, disable");
-       status = false;
-    } else {
-        computeUnionDirtyRect(id, unionDr);
-        if(areVisibleRegionsOverlapping(id) &&
-              !canHandleOverlapArea(id, unionDr)){
-           /* With DR optimizaton, On certain targets we are seeing slightly
-            * lower FPS in use cases where visible regions overlap &
-            * the total dirty area of layers is greater than a threshold value.
-            * Hence this optimization has been disabled for such use cases */
-            ALOGD_IF(GPUTILERECT_DEBUG, "GPUTileRect: Visible \
-                 regions overlap & Total Dirty Area > Threashold, disable");
-            status = false;
-        } else if(unionDr.isEmpty()) {
-            ALOGD_IF(GPUTILERECT_DEBUG,"GPUTileRect: UnionDr is emtpy, \
-                  No need to PRESERVE");
-            status = false;
-        }
-    }
-    return status;
-}
-#endif
-
+// ---------------------------------------------------------------------------
 }; // namespace android

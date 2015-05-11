@@ -519,8 +519,7 @@ sp<SurfaceControl> SurfaceComposerClient::createSurface(
         if (err == NO_ERROR) {
             sur = new SurfaceControl(this, handle, gbp);
         }
-    } else
-        ALOGE("SurfaceComposerClient::createSurface(%s) error. Status = %s", name.string(), strerror(-mStatus));
+    }
     return sur;
 }
 
@@ -656,35 +655,12 @@ void SurfaceComposerClient::unblankDisplay(const sp<IBinder>& token) {
     ComposerService::getComposerService()->unblank(token);
 }
 
-// TODO: Remove me.  Do not use.
-// This is a compatibility shim for one product whose drivers are depending on
-// this legacy function (when they shouldn't).
-status_t SurfaceComposerClient::getDisplayInfo(
-        int32_t displayId, DisplayInfo* info)
+int SurfaceComposerClient::setDisplayParameter(
+        const sp<IBinder>& display, int cmd, int para0, int para1, int para2)
 {
-    return getDisplayInfo(getBuiltInDisplay(displayId), info);
+    return ComposerService::getComposerService()->setDisplayParameter(display,
+            cmd, para0, para1, para2);
 }
-
-#if defined(ICS_CAMERA_BLOB) || defined(MR0_CAMERA_BLOB)
-ssize_t SurfaceComposerClient::getDisplayWidth(int32_t displayId) {
-    DisplayInfo info;
-    getDisplayInfo(getBuiltInDisplay(displayId), &info);
-    return info.w;
-}
-
-ssize_t SurfaceComposerClient::getDisplayHeight(int32_t displayId) {
-    DisplayInfo info;
-    getDisplayInfo(getBuiltInDisplay(displayId), &info);
-    return info.h;
-}
-
-ssize_t SurfaceComposerClient::getDisplayOrientation(int32_t displayId) {
-    DisplayInfo info;
-    getDisplayInfo(getBuiltInDisplay(displayId), &info);
-    return info.orientation;
-}
-#endif
-
 // ----------------------------------------------------------------------------
 
 #ifndef FORCE_SCREENSHOT_CPU_PATH
@@ -709,8 +685,7 @@ status_t ScreenshotClient::capture(
     }
 #endif
     return s->captureScreen(display, producer,
-            reqWidth, reqHeight, minLayerZ, maxLayerZ,
-            SS_CPU_CONSUMER);
+            reqWidth, reqHeight, minLayerZ, maxLayerZ);
 }
 
 ScreenshotClient::ScreenshotClient()
@@ -765,7 +740,7 @@ status_t ScreenshotClient::update(const sp<IBinder>& display,
     }
 
     status_t err = s->captureScreen(display, mBufferQueue,
-            reqWidth, reqHeight, minLayerZ, maxLayerZ, true);
+            reqWidth, reqHeight, minLayerZ, maxLayerZ);
 
     if (err == NO_ERROR) {
         err = mCpuConsumer->lockNextBuffer(&mBuffer);

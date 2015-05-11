@@ -31,6 +31,8 @@
 #include "Mesh.h"
 #include "Texture.h"
 
+#include <cutils/properties.h>
+
 // ---------------------------------------------------------------------------
 namespace android {
 // ---------------------------------------------------------------------------
@@ -80,8 +82,34 @@ size_t GLES20RenderEngine::getMaxViewportDims() const {
 void GLES20RenderEngine::setViewportAndProjection(
         size_t vpw, size_t vph, size_t w, size_t h, bool yswap) {
     mat4 m;
-    if (yswap)  m = mat4::ortho(0, w, h, 0, 0, 1);
-    else        m = mat4::ortho(0, w, 0, h, 0, 1);
+    const mat4 rot90(0,-1,0,0, 1,0,0,0, 0,0,1,0, 0,0,0,1);
+    const mat4 rot270(0,1,0,0, -1,0,0,0, 0,0,1,0, 0,0,0,1);
+
+    if (yswap)
+    {
+        char property[PROPERTY_VALUE_MAX];
+        property_get("ro.sf.rotation", property, 0);
+        switch (atoi(property)) {
+            case 90:
+                m = mat4::ortho(0, w, h, 0, 0, 1);
+                m = rot90 * m;
+                break;
+            case 180:
+                m = mat4::ortho(w, 0, 0, h, 0, 1);
+                break;
+            case 270:
+                m = mat4::ortho(0, w, h, 0, 0, 1);
+                m = rot270 * m;
+                break;
+            default:
+                m = mat4::ortho(0, w, h, 0, 0, 1);
+                break;
+        }
+    }
+    else
+    {
+        m = mat4::ortho(0, w, 0, h, 0, 1);
+    }
 
     glViewport(0, 0, vpw, vph);
     mState.setProjectionMatrix(m);
@@ -149,58 +177,29 @@ void GLES20RenderEngine::disableBlending() {
     glDisable(GL_BLEND);
 }
 
-#ifdef QCOM_BSP
-void GLES20RenderEngine::startTileComposition(int x , int y, int width,
-                                            int height, bool preserve) {
-    glStartTilingQCOM(x, y, width, height,
-          (preserve ? GL_COLOR_BUFFER_BIT0_QCOM : GL_NONE));
-}
-
-void GLES20RenderEngine::endTileComposition(unsigned int preserveMask) {
-    glEndTilingQCOM(preserveMask);
-}
-#endif
-
 
 void GLES20RenderEngine::bindImageAsFramebuffer(EGLImageKHR image,
-        uint32_t* texName, uint32_t* fbName, uint32_t* status,
-        bool useReadPixels, int reqWidth, int reqHeight) {
+        uint32_t* texName, uint32_t* fbName, uint32_t* status) {
     GLuint tname, name;
-    if (!useReadPixels) {
-        // turn our EGLImage into a texture
-        glGenTextures(1, &tname);
-        glBindTexture(GL_TEXTURE_2D, tname);
-        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)image);
+    // turn our EGLImage into a texture
+    glGenTextures(1, &tname);
+    glBindTexture(GL_TEXTURE_2D, tname);
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)image);
 
-        // create a Framebuffer Object to render into
-        glGenFramebuffers(1, &name);
-        glBindFramebuffer(GL_FRAMEBUFFER, name);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tname, 0);
-    } else {
-        // since we're going to use glReadPixels() anyways,
-        // use an intermediate renderbuffer instead
-        glGenRenderbuffers(1, &tname);
-        glBindRenderbuffer(GL_RENDERBUFFER, tname);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_OES, reqWidth, reqHeight);
-        // create a FBO to render into
-        glGenFramebuffers(1, &name);
-        glBindFramebuffer(GL_FRAMEBUFFER, name);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, tname);
-    }
+    // create a Framebuffer Object to render into
+    glGenFramebuffers(1, &name);
+    glBindFramebuffer(GL_FRAMEBUFFER, name);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tname, 0);
 
     *status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     *texName = tname;
     *fbName = name;
 }
 
-void GLES20RenderEngine::unbindFramebuffer(uint32_t texName, uint32_t fbName,
-        bool useReadPixels) {
+void GLES20RenderEngine::unbindFramebuffer(uint32_t texName, uint32_t fbName) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbName);
-    if (!useReadPixels)
-        glDeleteTextures(1, &texName);
-    else
-        glDeleteRenderbuffers(1, &texName);
+    glDeleteTextures(1, &texName);
 }
 
 void GLES20RenderEngine::setupFillWithColor(float r, float g, float b, float a) {

@@ -645,7 +645,7 @@ void SurfaceFlinger::init() {
             vsyncPhaseOffsetNs, true);
     mEventThread = new EventThread(vsyncSrc);
     sp<VSyncSource> sfVsyncSrc = new DispSyncSource(&mPrimaryDispSync,
-            sfVsyncPhaseOffsetNs, true);
+            sfVsyncPhaseOffsetNs, false);
     mSFEventThread = new EventThread(sfVsyncSrc);
     mEventQueue.setEventThread(mSFEventThread);
 
@@ -756,23 +756,39 @@ status_t SurfaceFlinger::getDisplayInfo(const sp<IBinder>& display, DisplayInfo*
         info->orientation = 0;
     }
 
-    int additionalRot = mDisplays[0]->getHardwareOrientation() / 90;
-    if ((type == DisplayDevice::DISPLAY_PRIMARY) && (additionalRot & DisplayState::eOrientationSwapMask)) {
-        info->h = hwc.getWidth(type);
-        info->w = hwc.getHeight(type);
-        info->xdpi = ydpi;
-        info->ydpi = xdpi;
-    }
-    else {
-        info->w = hwc.getWidth(type);
-        info->h = hwc.getHeight(type);
-        info->xdpi = xdpi;
-        info->ydpi = ydpi;
-    }
+    info->w = hwc.getWidth(type);
+    info->h = hwc.getHeight(type);
+    info->xdpi = xdpi;
+    info->ydpi = ydpi;
     info->fps = float(1e9 / hwc.getRefreshPeriod(type));
 
     // All non-virtual displays are currently considered secure.
     info->secure = true;
+
+    if (type == DisplayDevice::DISPLAY_PRIMARY) {
+        char property[PROPERTY_VALUE_MAX];
+        if (property_get("ro.sf.rotation", property, NULL) > 0) {
+            switch (atoi(property)) {
+                case 90:
+                    info->orientation = (info->orientation - 1 + 4) % 4;
+                    info->w = hwc.getHeight(type);
+                    info->h = hwc.getWidth(type);
+                    info->xdpi = ydpi;
+                    info->ydpi = xdpi;
+                    break;
+                case 180:
+                    info->orientation = (info->orientation - 2 + 4) % 4;
+                    break;
+                case 270:
+                    info->orientation = (info->orientation - 3 + 4) % 4;
+                    info->w = hwc.getHeight(type);
+                    info->h = hwc.getWidth(type);
+                    info->xdpi = ydpi;
+                    info->ydpi = xdpi;
+                    break;
+            }
+        }
+    }
 
     return NO_ERROR;
 }
@@ -942,24 +958,11 @@ void SurfaceFlinger::handleMessageInvalidate() {
     handlePageFlip();
 }
 
-#ifdef QCOM_BSP
-/* Compute DirtyRegion, if DR optimization for GPU comp optimization
- * is ON & and no external device is connected.*/
-void SurfaceFlinger::setUpTiledDr() {
-    if(mGpuTileRenderEnable && (mDisplays.size()==1)) {
-        const sp<DisplayDevice>& hw(mDisplays[HWC_DISPLAY_PRIMARY]);
-        mCanUseGpuTileRender = computeTiledDr(hw);
-    }
-}
-#endif
 void SurfaceFlinger::handleMessageRefresh() {
     ATRACE_CALL();
     preComposition();
     rebuildLayerStacks();
     setUpHWComposer();
-#ifdef QCOM_BSP
-    setUpTiledDr();
-#endif
     doDebugFlashRegions();
     doComposition();
     postComposition();
@@ -1944,12 +1947,6 @@ void SurfaceFlinger::invalidateHwcGeometry()
 void SurfaceFlinger::doDisplayComposition(const sp<const DisplayDevice>& hw,
         const Region& inDirtyRegion)
 {
-#ifdef MTK_HARDWARE
-    if (hw->getDisplayType() != HWC_DISPLAY_PRIMARY && inDirtyRegion.isEmpty()) {
-        return;
-    }
-#endif
-
     Region dirtyRegion(inDirtyRegion);
 
     // compute the invalid region
@@ -2107,47 +2104,6 @@ void SurfaceFlinger::doComposeSurfaces(const sp<const DisplayDevice>& hw, const 
     const Transform& tr = hw->getTransform();
     if (cur != end) {
         // we're using h/w composer
-#ifdef QCOM_BSP
-        int fbWidth= hw->getWidth();
-        int fbHeight= hw->getHeight();
-        /* if GPUTileRender optimization property is on & can be used
-         * i) Enable EGL_SWAP_PRESERVED flag
-         * ii) do startTile with union DirtyRect
-         * else , Disable EGL_SWAP_PRESERVED */
-        if(mGpuTileRenderEnable && (mDisplays.size()==1)) {
-            if(mCanUseGpuTileRender && !mUnionDirtyRect.isEmpty()) {
-                hw->eglSwapPreserved(true);
-                Rect dr = mUnionDirtyRect;
-                engine.startTileComposition(dr.left, (fbHeight-dr.bottom),
-                      (dr.right-dr.left),
-                      (dr.bottom-dr.top), 0);
-            } else {
-                // Un Set EGL_SWAP_PRESERVED flag, if no tiling required.
-                hw->eglSwapPreserved(false);
-            }
-            // DrawWormHole/Any Draw has to be within startTile & EndTile
-            if (hasGlesComposition) {
-                if (hasHwcComposition) {
-                    if(mCanUseGpuTileRender && !mUnionDirtyRect.isEmpty()) {
-                        const Rect& scissor(mUnionDirtyRect);
-                        engine.setScissor(scissor.left,
-                              hw->getHeight()- scissor.bottom,
-                              scissor.getWidth(), scissor.getHeight());
-                        engine.clearWithColor(0, 0, 0, 0);
-                        engine.disableScissor();
-                    } else {
-                        engine.clearWithColor(0, 0, 0, 0);
-                    }
-                } else {
-                    if (cur->getCompositionType() != HWC_BLIT &&
-                          !clearRegion.isEmpty()){
-                        drawWormhole(hw, clearRegion);
-                    }
-                }
-            }
-        }
-#endif
-
         for (size_t i=0 ; i<count && cur!=end ; ++i, ++cur) {
             const sp<Layer>& layer(layers[i]);
             const Region clip(dirty.intersect(tr.transform(layer->visibleRegion)));
@@ -2182,15 +2138,6 @@ void SurfaceFlinger::doComposeSurfaces(const sp<const DisplayDevice>& hw, const 
             }
             layer->setAcquireFence(hw, *cur);
         }
-
-#ifdef QCOM_BSP
-        // call EndTile, if starTile has been called in this cycle.
-        if(mGpuTileRenderEnable && (mDisplays.size()==1)) {
-            if(mCanUseGpuTileRender && !mUnionDirtyRect.isEmpty()) {
-                engine.endTileComposition(GL_PRESERVE);
-            }
-        }
-#endif
     } else {
         // we're not using h/w composer
         for (size_t i=0 ; i<count ; ++i) {
@@ -2554,6 +2501,10 @@ void SurfaceFlinger::onInitializeDisplays() {
     // reset screen orientation and use primary layer stack
     Vector<ComposerState> state;
     Vector<DisplayState> displays;
+    sp<const DisplayDevice> hw(getDefaultDisplayDevice());
+    const uint32_t hw_w = hw->getWidth();
+    const uint32_t hw_h = hw->getHeight();
+
     DisplayState d;
     d.what = DisplayState::eDisplayProjectionChanged |
              DisplayState::eLayerStackChanged;
@@ -2562,6 +2513,26 @@ void SurfaceFlinger::onInitializeDisplays() {
     d.orientation = DisplayState::eOrientationDefault;
     d.frame.makeInvalid();
     d.viewport.makeInvalid();
+
+    char property[PROPERTY_VALUE_MAX];
+    if (property_get("ro.sf.rotation", property, NULL) > 0) {
+        switch (atoi(property)) {
+            case 90:
+                d.frame = Rect(hw_h, hw_w);
+                d.viewport = Rect(hw_h, hw_w);
+                break;
+            case 180:
+                d.frame = Rect(hw_w, hw_h);
+                d.viewport = Rect(hw_w, hw_h);
+                break;
+            case 270:
+                d.frame = Rect(hw_h, hw_w);
+                d.viewport = Rect(hw_h, hw_w);
+                break;
+            default:
+                break;
+        }
+    }
     displays.add(d);
     setTransactionState(state, displays, 0);
     onScreenAcquired(getDefaultDisplayDevice());
@@ -2700,7 +2671,9 @@ status_t SurfaceFlinger::dump(int fd, const Vector<String16>& args)
         // print something in dumpsys).
         int retry = 3;
         while (mStateLock.tryLock()<0 && --retry>=0) {
-            usleep(1000000);
+            //usleep(1000000);
+			ALOGD("######SurfaceFlinger::dump mStateLock.tryLock()<0, retry=%d", retry);
+			usleep(20000);
         }
         const bool locked(retry >= 0);
         if (!locked) {
@@ -3029,9 +3002,6 @@ status_t SurfaceFlinger::onTransact(
             const int pid = ipc->getCallingPid();
             const int uid = ipc->getCallingUid();
             if ((uid != AID_GRAPHICS) &&
-#ifdef USE_MHEAP_SCREENSHOT
-                 (uid != AID_SYSTEM) &&
-#endif
                     !PermissionCache::checkPermission(sAccessSurfaceFlinger, pid, uid)) {
                 ALOGE("Permission Denial: "
                         "can't access SurfaceFlinger pid=%d, uid=%d", pid, uid);
@@ -3040,9 +3010,6 @@ status_t SurfaceFlinger::onTransact(
             break;
         }
         case CAPTURE_SCREEN:
-#ifdef USE_MHEAP_SCREENSHOT
-        case CAPTURE_SCREEN_DEPRECATED:
-#endif
         {
             // codes that require permission check
             IPCThreadState* ipc = IPCThreadState::self();
@@ -3237,8 +3204,7 @@ public:
 status_t SurfaceFlinger::captureScreen(const sp<IBinder>& display,
         const sp<IGraphicBufferProducer>& producer,
         uint32_t reqWidth, uint32_t reqHeight,
-        uint32_t minLayerZ, uint32_t maxLayerZ,
-        bool useReadPixels) {
+        uint32_t minLayerZ, uint32_t maxLayerZ) {
 
     if (CC_UNLIKELY(display == 0))
         return BAD_VALUE;
@@ -3264,18 +3230,16 @@ status_t SurfaceFlinger::captureScreen(const sp<IBinder>& display,
         sp<IGraphicBufferProducer> producer;
         uint32_t reqWidth, reqHeight;
         uint32_t minLayerZ,maxLayerZ;
-        bool useReadPixels;
         status_t result;
     public:
         MessageCaptureScreen(SurfaceFlinger* flinger,
                 const sp<IBinder>& display,
                 const sp<IGraphicBufferProducer>& producer,
                 uint32_t reqWidth, uint32_t reqHeight,
-                uint32_t minLayerZ, uint32_t maxLayerZ, bool useReadPixels)
+                uint32_t minLayerZ, uint32_t maxLayerZ)
             : flinger(flinger), display(display), producer(producer),
               reqWidth(reqWidth), reqHeight(reqHeight),
               minLayerZ(minLayerZ), maxLayerZ(maxLayerZ),
-              useReadPixels(useReadPixels),
               result(PERMISSION_DENIED)
         {
         }
@@ -3285,19 +3249,8 @@ status_t SurfaceFlinger::captureScreen(const sp<IBinder>& display,
         virtual bool handler() {
             Mutex::Autolock _l(flinger->mStateLock);
             sp<const DisplayDevice> hw(flinger->getDisplayDevice(display));
-            bool useReadPixels = this->useReadPixels && !flinger->mGpuToCpuSupported;
-#ifdef USE_MHEAP_SCREENSHOT
-            if (!useReadPixels) {
-#endif
-                result = flinger->captureScreenImplLocked(hw,
-                        producer, reqWidth, reqHeight, minLayerZ, maxLayerZ,
-                        useReadPixels);
-#ifdef USE_MHEAP_SCREENSHOT
-            } else {
-                // Should never get here
-                return BAD_VALUE;
-            }
-#endif
+            result = flinger->captureScreenImplLocked(hw,
+                    producer, reqWidth, reqHeight, minLayerZ, maxLayerZ);
             static_cast<GraphicProducerWrapper*>(producer->asBinder().get())->exit(result);
             return true;
         }
@@ -3319,8 +3272,7 @@ status_t SurfaceFlinger::captureScreen(const sp<IBinder>& display,
     // which does the marshaling work forwards to our "fake remote" above.
     sp<MessageBase> msg = new MessageCaptureScreen(this,
             display, IGraphicBufferProducer::asInterface( wrapper ),
-            reqWidth, reqHeight, minLayerZ, maxLayerZ,
-            useReadPixels);
+            reqWidth, reqHeight, minLayerZ, maxLayerZ);
 
     status_t res = postMessageAsync(msg);
     if (res == NO_ERROR) {
@@ -3329,6 +3281,27 @@ status_t SurfaceFlinger::captureScreen(const sp<IBinder>& display,
     return res;
 }
 
+int SurfaceFlinger::setDisplayParameter(const sp<IBinder>& display, int cmd,
+        int para0, int para1, int para2) {
+    int32_t type = BAD_VALUE;
+    for (int i=0 ; i<DisplayDevice::NUM_BUILTIN_DISPLAY_TYPES ; i++) {
+        if (display == mBuiltinDisplays[i]) {
+            type = i;
+            break;
+        }
+    }
+
+    if (type < 0) {
+        return type;
+    }
+
+    const HWComposer& hwc(getHwComposer());
+    if (!hwc.isConnected(type)) {
+        return NAME_NOT_FOUND;
+    }
+
+    return hwc.setDisplayParameter(cmd, type, para0, para1);
+}
 
 void SurfaceFlinger::renderScreenImplLocked(
         const sp<const DisplayDevice>& hw,
@@ -3361,16 +3334,9 @@ void SurfaceFlinger::renderScreenImplLocked(
         const Layer::State& state(layer->getDrawingState());
         if (state.layerStack == hw->getLayerStack()) {
             if (state.z >= minLayerZ && state.z <= maxLayerZ) {
-#ifdef QCOM_BSP
-                // dont render the secure Display Layer
-                if(layer->isSecureDisplay()) {
-                    continue;
-                }
-#endif
                 if (layer->isVisible()) {
                     if (filtering) layer->setFiltering(true);
-                    if(!layer->isProtected())
-                           layer->draw(hw);
+                    layer->draw(hw);
                     if (filtering) layer->setFiltering(false);
                 }
             }
@@ -3387,23 +3353,42 @@ status_t SurfaceFlinger::captureScreenImplLocked(
         const sp<const DisplayDevice>& hw,
         const sp<IGraphicBufferProducer>& producer,
         uint32_t reqWidth, uint32_t reqHeight,
-        uint32_t minLayerZ, uint32_t maxLayerZ,
-        bool useReadPixels)
+        uint32_t minLayerZ, uint32_t maxLayerZ)
 {
     ATRACE_CALL();
+
+    char property[PROPERTY_VALUE_MAX];
+    property_get("ro.sf.rotation", property, NULL);
 
     // get screen geometry
     const uint32_t hw_w = hw->getWidth();
     const uint32_t hw_h = hw->getHeight();
 
-    if ((reqWidth > hw_w) || (reqHeight > hw_h)) {
-        ALOGE("size mismatch (%d, %d) > (%d, %d)",
-                reqWidth, reqHeight, hw_w, hw_h);
-        return BAD_VALUE;
-    }
+    switch (atoi(property)) {
+        case 90:
+        case 270:
+            if ((reqWidth > hw_h) || (reqHeight > hw_w)) {
+                ALOGE("size mismatch (%d, %d) > (%d, %d)",
+                        reqWidth, reqHeight, hw_h, hw_w);
+                return BAD_VALUE;
+            }
 
-    reqWidth  = (!reqWidth)  ? hw_w : reqWidth;
-    reqHeight = (!reqHeight) ? hw_h : reqHeight;
+            reqWidth  = (!reqWidth)  ? hw_h : reqWidth;
+            reqHeight = (!reqHeight) ? hw_w : reqHeight;
+            break;
+        case 0:
+        case 180:
+        default:
+            if ((reqWidth > hw_w) || (reqHeight > hw_h)) {
+                ALOGE("size mismatch (%d, %d) > (%d, %d)",
+                        reqWidth, reqHeight, hw_w, hw_h);
+                return BAD_VALUE;
+            }
+
+            reqWidth  = (!reqWidth)  ? hw_w : reqWidth;
+            reqHeight = (!reqHeight) ? hw_h : reqHeight;
+            break;
+    }
 
     // create a surface (because we're a producer, and we need to
     // dequeue/queue a buffer)
@@ -3435,7 +3420,7 @@ status_t SurfaceFlinger::captureScreenImplLocked(
                 if (image != EGL_NO_IMAGE_KHR) {
                     // this binds the given EGLImage as a framebuffer for the
                     // duration of this scope.
-                    RenderEngine::BindImageAsFramebuffer imageBond(getRenderEngine(), image, useReadPixels, reqWidth, reqHeight);
+                    RenderEngine::BindImageAsFramebuffer imageBond(getRenderEngine(), image);
                     if (imageBond.getStatus() == NO_ERROR) {
                         // this will in fact render into our dequeued buffer
                         // via an FBO, which means we didn't have to create
@@ -3463,15 +3448,6 @@ status_t SurfaceFlinger::captureScreenImplLocked(
                         } else {
                             ALOGW("captureScreen: error creating EGL fence: %#x", eglGetError());
                             // not fatal
-                        }
-
-                        if (useReadPixels) {
-                            sp<GraphicBuffer> buf = static_cast<GraphicBuffer*>(buffer);
-                            void* vaddr;
-                            if (buf->lock(GRALLOC_USAGE_SW_WRITE_OFTEN, &vaddr) == NO_ERROR) {
-                                getRenderEngine().readPixels(0, 0, buffer->stride, reqHeight, (uint32_t *)vaddr);
-                                buf->unlock();
-                            }
                         }
 
                         if (DEBUG_SCREENSHOTS) {
@@ -3530,108 +3506,6 @@ void SurfaceFlinger::checkScreenshot(size_t w, size_t s, size_t h, void const* v
     }
 }
 
-#ifdef USE_MHEAP_SCREENSHOT
-status_t SurfaceFlinger::captureScreenImplCpuConsumerLocked(
-        const sp<const DisplayDevice>& hw,
-        sp<IMemoryHeap>* heap, uint32_t* w, uint32_t* h,
-        uint32_t reqWidth, uint32_t reqHeight,
-        uint32_t minLayerZ, uint32_t maxLayerZ)
-{
-    ATRACE_CALL();
-
-    // get screen geometry
-    const uint32_t hw_w = hw->getWidth();
-    const uint32_t hw_h = hw->getHeight();
-
-    if ((reqWidth > hw_w) || (reqHeight > hw_h)) {
-        ALOGE("size mismatch (%d, %d) > (%d, %d)",
-                reqWidth, reqHeight, hw_w, hw_h);
-        return BAD_VALUE;
-    }
-
-    reqWidth  = (!reqWidth)  ? hw_w : reqWidth;
-    reqHeight = (!reqHeight) ? hw_h : reqHeight;
-
-    status_t result = NO_ERROR;
-
-    renderScreenImplLocked(hw, reqWidth, reqHeight, minLayerZ, maxLayerZ, true);
-
-    size_t size = reqWidth * reqHeight * 4;
-    // allocate shared memory large enough to hold the
-    // screen capture
-    sp<MemoryHeapBase> base(
-            new MemoryHeapBase(size, 0, "screen-capture") );
-    void *vaddr = base->getBase();
-    glReadPixels(0, 0, reqWidth, reqHeight,
-            GL_RGBA, GL_UNSIGNED_BYTE, vaddr);
-    if (glGetError() == GL_NO_ERROR) {
-        *heap = base;
-        *w = reqWidth;
-        *h = reqHeight;
-        result = NO_ERROR;
-    } else {
-        result = INVALID_OPERATION;
-    }
-
-    return result;
-}
-
-status_t SurfaceFlinger::captureScreen(const sp<IBinder>& display,
-        sp<IMemoryHeap>* heap,
-        uint32_t* outWidth, uint32_t* outHeight,
-        uint32_t reqWidth, uint32_t reqHeight,
-        uint32_t minLayerZ, uint32_t maxLayerZ)
-{
-    if (CC_UNLIKELY(display == 0))
-        return BAD_VALUE;
-
-    class MessageCaptureScreen : public MessageBase {
-        SurfaceFlinger* flinger;
-        sp<IBinder> display;
-        sp<IMemoryHeap>* heap;
-        uint32_t* outWidth;
-        uint32_t* outHeight;
-        uint32_t reqWidth;
-        uint32_t reqHeight;
-        uint32_t minLayerZ;
-        uint32_t maxLayerZ;
-        status_t result;
-    public:
-        MessageCaptureScreen(SurfaceFlinger* flinger,
-                const sp<IBinder>& display, sp<IMemoryHeap>* heap,
-                uint32_t* outWidth, uint32_t* outHeight,
-                uint32_t reqWidth, uint32_t reqHeight,
-                uint32_t minLayerZ, uint32_t maxLayerZ)
-            : flinger(flinger), display(display), heap(heap),
-              outWidth(outWidth), outHeight(outHeight),
-              reqWidth(reqWidth), reqHeight(reqHeight),
-              minLayerZ(minLayerZ), maxLayerZ(maxLayerZ),
-              result(PERMISSION_DENIED)
-        {
-        }
-        status_t getResult() const {
-            return result;
-        }
-        virtual bool handler() {
-            Mutex::Autolock _l(flinger->mStateLock);
-            sp<const DisplayDevice> hw(flinger->getDisplayDevice(display));
-            result = flinger->captureScreenImplCpuConsumerLocked(hw, heap,
-                    outWidth, outHeight,
-                    reqWidth, reqHeight, minLayerZ, maxLayerZ);
-            return true;
-        }
-    };
-
-    sp<MessageBase> msg = new MessageCaptureScreen(this, display, heap,
-            outWidth, outHeight, reqWidth, reqHeight, minLayerZ, maxLayerZ);
-    status_t res = postMessageSync(msg);
-    if (res == NO_ERROR) {
-        res = static_cast<MessageCaptureScreen*>( msg.get() )->getResult();
-    }
-    return res;
-}
-#endif
-
 // ---------------------------------------------------------------------------
 
 SurfaceFlinger::LayerVector::LayerVector() {
@@ -3678,12 +3552,10 @@ SurfaceFlinger::DisplayDeviceState::DisplayDeviceState(DisplayDevice::DisplayTyp
 }; // namespace android
 
 
-#ifndef USE_MHEAP_SCREENSHOT
 #if defined(__gl_h_)
 #error "don't include gl/gl.h in this file"
 #endif
 
 #if defined(__gl2_h_)
 #error "don't include gl2/gl2.h in this file"
-#endif
 #endif

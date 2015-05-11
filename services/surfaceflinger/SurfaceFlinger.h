@@ -208,12 +208,7 @@ private:
     virtual status_t captureScreen(const sp<IBinder>& display,
             const sp<IGraphicBufferProducer>& producer,
             uint32_t reqWidth, uint32_t reqHeight,
-            uint32_t minLayerZ, uint32_t maxLayerZ, bool isCpuConsumer);
-#ifdef USE_MHEAP_SCREENSHOT
-    virtual status_t captureScreen(const sp<IBinder>& display, sp<IMemoryHeap>* heap,
-        uint32_t* width, uint32_t* height, uint32_t reqWidth,
-        uint32_t reqHeight, uint32_t minLayerZ, uint32_t maxLayerZ);
-#endif
+            uint32_t minLayerZ, uint32_t maxLayerZ);
     // called when screen needs to turn off
     virtual void blank(const sp<IBinder>& display);
     // called when screen is turning back on
@@ -335,16 +330,7 @@ private:
             const sp<const DisplayDevice>& hw,
             const sp<IGraphicBufferProducer>& producer,
             uint32_t reqWidth, uint32_t reqHeight,
-            uint32_t minLayerZ, uint32_t maxLayerZ,
-            bool useReadPixels);
-
-#ifdef USE_MHEAP_SCREENSHOT
-    status_t captureScreenImplCpuConsumerLocked(
-            const sp<const DisplayDevice>& hw,
-            sp<IMemoryHeap>* heap, uint32_t* width, uint32_t* height,
-            uint32_t reqWidth, uint32_t reqHeight,
             uint32_t minLayerZ, uint32_t maxLayerZ);
-#endif
 
     /* ------------------------------------------------------------------------
      * EGL
@@ -414,6 +400,9 @@ private:
     /* ------------------------------------------------------------------------
      * Display management
      */
+	virtual int setDisplayParameter(const sp<IBinder>& display, int cmd,
+            int para0, int para1, int para2);
+
 
     /* ------------------------------------------------------------------------
      * VSync
@@ -447,6 +436,7 @@ private:
     volatile int32_t mTransactionFlags;
     Condition mTransactionCV;
     bool mTransactionPending;
+    bool mforcemakecurrent;
     bool mAnimTransactionPending;
     Vector< sp<Layer> > mLayersPendingRemoval;
     SortedVector< wp<IBinder> > mGraphicBufferProducerList;

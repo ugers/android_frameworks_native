@@ -54,9 +54,8 @@ class GLES20RenderEngine : public RenderEngine {
     Vector<Group> mGroupStack;
 
     virtual void bindImageAsFramebuffer(EGLImageKHR image,
-            uint32_t* texName, uint32_t* fbName, uint32_t* status,
-            bool useReadPixels, int reqWidth, int reqHeight);
-    virtual void unbindFramebuffer(uint32_t texName, uint32_t fbName, bool useReadPixels);
+            uint32_t* texName, uint32_t* fbName, uint32_t* status);
+    virtual void unbindFramebuffer(uint32_t texName, uint32_t fbName);
 
 public:
     GLES20RenderEngine();
@@ -73,11 +72,6 @@ protected:
     virtual void setupFillWithColor(float r, float g, float b, float a);
     virtual void disableTexturing();
     virtual void disableBlending();
-#ifdef QCOM_BSP
-    virtual void startTileComposition(int x , int y, int width,
-          int height,bool preserve );
-    virtual void endTileComposition(unsigned int preserveMask);
-#endif
 
     virtual void drawMesh(const Mesh& mesh);
 

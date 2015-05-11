@@ -298,6 +298,7 @@ public:
 
     // for debugging ----------------------------------------------------------
     void dump(String8& out) const;
+    int setDisplayParameter(int cmd, int disp, int para0, int para1) const;
 
 private:
     void loadHwcModule();
@@ -378,6 +379,10 @@ private:
     // thread-safe
     mutable Mutex mEventControlLock;
 
+    // others
+    bool mFullScreenVideo;
+    int mMaxLayers;
+	
     //GPUTileRect : CompMap, class to track the composition type of layers
     struct CompMap {
         int32_t count;
@@ -411,18 +416,6 @@ private:
             return true;
         }
     };
-
-#ifdef QCOM_BSP
-    //GPUTileRect Optimization Functions.
-    CompMap prev_comp_map[MAX_HWC_DISPLAYS], current_comp_map[MAX_HWC_DISPLAYS];
-    bool isCompositionMapChanged(int32_t id);
-    bool isGeometryChanged(int32_t id);
-    void computeUnionDirtyRect(int32_t id, Rect& unionDirtyRect);
-    bool areVisibleRegionsOverlapping(int32_t id );
-    bool needsScaling(int32_t id);
-    float mDynThreshold;
-    bool canHandleOverlapArea(int32_t id, Rect unionDr);
-#endif
 };
 
 // ---------------------------------------------------------------------------

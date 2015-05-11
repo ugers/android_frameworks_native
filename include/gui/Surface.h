@@ -150,9 +150,6 @@ protected:
     virtual int setBuffersTimestamp(int64_t timestamp);
     virtual int setCrop(Rect const* rect);
     virtual int setUsage(uint32_t reqUsage);
-#ifdef QCOM_HARDWARE
-    virtual int setBuffersSize(int size);
-#endif
 
 public:
     virtual int lock(ANativeWindow_Buffer* outBuffer, ARect* inOutDirtyBounds);
@@ -213,12 +210,6 @@ private:
     // mCrop is the crop rectangle that will be used for the next buffer
     // that gets queued. It is set by calling setCrop.
     Rect mCrop;
-
-#ifdef QCOM_BSP
-    // mDirtyRect is the dirty rectangle set for the next buffer that gets
-    // queued. It is set by calling setDirtyRect.
-    Rect mDirtyRect;
-#endif
 
     // mScalingMode is the scaling mode that will be used for the next
     // buffers that get queued. It is set by calling setScalingMode.

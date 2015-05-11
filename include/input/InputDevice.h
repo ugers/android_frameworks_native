@@ -22,6 +22,19 @@
 
 namespace android {
 
+struct CtpName{
+    inline CtpName():
+        number (10),
+        default_name(String8("tp")),
+        ctp_name ({String8("gslX680"),String8("gt82x"),String8("ft5x_ts"),String8("sunxi-ts"),String8("gt818_ts"),
+                String8("tu_ts"),String8("sw-ts"),String8("gt9xx_ts"),String8("gt9xxf_ts"),String8("aw5306_ts")}){
+        }
+    int number;
+    String8 default_name;
+    String8 ctp_name[10];
+
+};
+
 /*
  * Identifies a device.
  */
