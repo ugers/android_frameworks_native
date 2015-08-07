@@ -56,10 +56,6 @@
 #include "DisplayHardware/HWComposer.h"
 #include "Effects/Daltonizer.h"
 
-#ifdef SAMSUNG_HDMI_SUPPORT
-#include "SecHdmiClient.h"
-#endif
-
 namespace android {
 
 // ---------------------------------------------------------------------------
@@ -490,17 +486,6 @@ private:
     bool mCanUseGpuTileRender;
     Rect mUnionDirtyRect;
 
-#ifdef QCOM_BSP
-    // Set up the DirtyRect/flags for GPU Comp optimization if required.
-    void setUpTiledDr();
-    // Find out if GPU composition can use Dirtyregion optimization
-    // Get the union dirty rect to operate
-    bool computeTiledDr(const sp<const DisplayDevice>& hw);
-    enum {
-       GL_PRESERVE_NONE = 0,
-       GL_PRESERVE      = 1
-    };
-#endif
 
     // these are thread safe
     mutable MessageQueue mEventQueue;
@@ -522,9 +507,6 @@ private:
 
     Daltonizer mDaltonizer;
     bool mDaltonize;
-#if defined(SAMSUNG_HDMI_SUPPORT) && defined(SAMSUNG_EXYNOS5250)
-    SecHdmiClient *                         mHdmiClient;
-#endif
 };
 
 }; // namespace android

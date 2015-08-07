@@ -78,12 +78,6 @@ public:
         return surface != NULL && surface->getIGraphicBufferProducer() != NULL;
     }
 
-#ifdef QCOM_BSP
-    /* sets dirty rectangle of the buffer that gets queued next for the
-     * Surface */
-    status_t setDirtyRect(const Rect* dirtyRect);
-#endif
-
 protected:
     virtual ~Surface();
 

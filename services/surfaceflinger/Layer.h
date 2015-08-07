@@ -263,11 +263,6 @@ public:
     // Updates the transform hint in our SurfaceFlingerConsumer to match
     // the current orientation of the display device.
     void updateTransformHint(const sp<const DisplayDevice>& hw);
-#ifdef QCOM_BSP
-    virtual bool isExtOnly() const;
-    virtual bool isIntOnly() const;
-    virtual bool isSecureDisplay() const;
-#endif
 
     /*
      * returns the rectangle that crops the content of the layer and scales it
@@ -294,11 +289,6 @@ public:
     void dumpStats(String8& result) const;
     void clearStats();
     void logFrameStats();
-
-#ifdef QCOM_BSP
-    //GPUTileRect : Return true if the layer has been updated in this frame.
-    bool hasNewFrame() const;
-#endif
 
 protected:
     // constant

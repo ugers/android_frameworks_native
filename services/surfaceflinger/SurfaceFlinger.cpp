@@ -78,14 +78,6 @@
 #include "RenderEngine/RenderEngine.h"
 #include <cutils/compiler.h>
 
-#ifdef SAMSUNG_HDMI_SUPPORT
-#include "SecTVOutService.h"
-#endif
-
-#ifdef QCOM_BSP
-#include <display_config.h>
-#endif
-
 #define DISPLAY_COUNT       1
 
 /*
@@ -188,27 +180,8 @@ SurfaceFlinger::SurfaceFlinger()
             mDebugDDMS = 0;
         }
     }
-#ifdef QCOM_BSP
-    mCanUseGpuTileRender = false;
-    property_get("debug.sf.gpu_comp_tiling", value, "0");
-    mGpuTileRenderEnable = atoi(value) ? true : false;
-    if(mGpuTileRenderEnable)
-       ALOGV("DirtyRect optimization enabled for FULL GPU Composition");
-    mUnionDirtyRect.clear();
-#endif
-
     ALOGI_IF(mDebugRegion, "showupdates enabled");
     ALOGI_IF(mDebugDDMS, "DDMS debugging enabled");
-
-#ifdef SAMSUNG_HDMI_SUPPORT
-    ALOGD(">>> Run service");
-    android::SecTVOutService::instantiate();
-#if defined(SAMSUNG_EXYNOS5250)
-    mHdmiClient = SecHdmiClient::getInstance();
-    mHdmiClient->setHdmiEnable(1);
-#endif
-#endif
-
 }
 
 void SurfaceFlinger::onFirstRef()
@@ -980,24 +953,6 @@ void SurfaceFlinger::doDebugFlashRegions()
         if (hw->canDraw()) {
             const int32_t height = hw->getHeight();
             RenderEngine& engine(getRenderEngine());
-#ifdef QCOM_BSP
-            // Use Union DR, if it is valid & GPU Tiled DR optimization is ON
-            if(mCanUseGpuTileRender && !mUnionDirtyRect.isEmpty()) {
-                // redraw the whole screen
-                doComposeSurfaces(hw, Region(hw->bounds()));
-                Region dirtyRegion(mUnionDirtyRect);
-                Rect dr = mUnionDirtyRect;
-                hw->eglSwapPreserved(true);
-                engine.startTileComposition(dr.left, (height-dr.bottom),
-                      (dr.right-dr.left),
-                      (dr.bottom-dr.top), 1);
-                // and draw the dirty region
-                engine.fillRegionWithColor(dirtyRegion, height, 1, 0, 1, 1);
-                engine.endTileComposition(GL_PRESERVE);
-                hw->compositionComplete();
-                hw->swapBuffers(getHwComposer());
-            } else
-#endif
             {
                 // transform the dirty region into this screen's coordinate
                 // space
@@ -1006,10 +961,7 @@ void SurfaceFlinger::doDebugFlashRegions()
                    // redraw the whole screen
                    doComposeSurfaces(hw, Region(hw->bounds()));
                    // and draw the dirty region
-#ifdef QCOM_BSP
-                   if(mGpuTileRenderEnable)
-                       hw->eglSwapPreserved(false);
-#endif
+
 
                    engine.fillRegionWithColor(dirtyRegion, height, 1, 0, 1, 1);
                    hw->compositionComplete();
@@ -1741,49 +1693,14 @@ void SurfaceFlinger::computeVisibleRegions(size_t dpy,
     bool bIgnoreLayers = false;
     int indexLOI = -1;
     size_t i = currentLayers.size();
-#ifdef QCOM_BSP
-    while (i--) {
-        const sp<Layer>& layer = currentLayers[i];
-        // iterate through the layer list to find ext_only layers and store
-        // the index
-        if (layer->isSecureDisplay()) {
-            bIgnoreLayers = true;
-            indexLOI = -1;
-            if(!dpy)
-                indexLOI = i;
-            break;
-        }
 
-        if (dpy && layer->isExtOnly()) {
-            bIgnoreLayers = true;
-            indexLOI = i;
-        }
-    }
-    i = currentLayers.size();
-#endif
     while (i--) {
         const sp<Layer>& layer = currentLayers[i];
 
         // start with the whole surface at its current location
         const Layer::State& s(layer->getDrawingState());
 
-#ifdef QCOM_BSP
-        // Only add the layer marked as "external_only" to external list and
-        // only remove the layer marked as "external_only" from primary list
-        // and do not add the layer marked as "internal_only" to external list
-        // Add secure UI layers to primary and remove other layers from internal
-        //and external list
-        if((bIgnoreLayers && indexLOI != (int)i) ||
-           (!dpy && layer->isExtOnly()) ||
-           (dpy && layer->isIntOnly())) {
-            // Ignore all other layers except the layers marked as ext_only
-            // by setting visible non transparent region empty.
-            Region visibleNonTransRegion;
-            visibleNonTransRegion.set(Rect(0,0));
-            layer->setVisibleNonTransparentRegion(visibleNonTransRegion);
-            continue;
-        }
-#endif
+
         // only consider the layers on the given later stack
         // Override layers created using presentation class by the layers having
         // ext_only flag enabled
@@ -1988,24 +1905,6 @@ void SurfaceFlinger::doDisplayComposition(const sp<const DisplayDevice>& hw,
     hw->swapBuffers(getHwComposer());
 }
 
-#ifdef QCOM_BSP
-bool SurfaceFlinger::computeTiledDr(const sp<const DisplayDevice>& hw) {
-    int fbWidth= hw->getWidth();
-    int fbHeight= hw->getHeight();
-    Rect fullScreenRect = Rect(0,0,fbWidth, fbHeight);
-    const int32_t id = hw->getHwcDisplayId();
-    mUnionDirtyRect.clear();
-    HWComposer& hwc(getHwComposer());
-
-    /* Compute and return the Union of Dirty Rects.
-     * Return false if the unionDR is fullscreen, as there is no benefit from
-     * preserving full screen.*/
-    return (hwc.canUseTiledDR(id, mUnionDirtyRect) &&
-          (mUnionDirtyRect != fullScreenRect));
-
-}
-#endif
-
 void SurfaceFlinger::doComposeSurfaces(const sp<const DisplayDevice>& hw, const Region& dirty)
 {
     RenderEngine& engine(getRenderEngine());
@@ -2050,20 +1949,7 @@ void SurfaceFlinger::doComposeSurfaces(const sp<const DisplayDevice>& hw, const 
 
 
             // screen is already cleared here
-#ifdef QCOM_BSP
-            clearRegion.clear();
-            if(mGpuTileRenderEnable && (mDisplays.size()==1)) {
-                clearRegion = region;
-                if (cur == end) {
-                    drawWormhole(hw, region);
-                } else if(mCanUseGpuTileRender) {
-                   /* If GPUTileRect DR optimization on clear only the UnionDR
-                    * (computed by computeTiledDr) which is the actual region
-                    * that will be drawn on FB in this cycle.. */
-                    clearRegion = clearRegion.andSelf(Region(mUnionDirtyRect));
-                }
-            } else
-#endif
+
             {
                 if (!region.isEmpty()) {
                     if (cur != end) {

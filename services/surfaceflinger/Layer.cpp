@@ -45,9 +45,6 @@
 #include "DisplayHardware/HWComposer.h"
 
 #include "RenderEngine/RenderEngine.h"
-#ifdef QCOM_BSP
-#include <gralloc_priv.h>
-#endif
 
 #define DEBUG_RESIZE    0
 
@@ -529,17 +526,6 @@ void Layer::onDraw(const sp<const DisplayDevice>& hw, const Region& clip) const
     }
 
     bool canAllowGPU = false;
-#ifdef QCOM_BSP
-    if(isProtected()) {
-        char property[PROPERTY_VALUE_MAX];
-        if ((property_get("persist.gralloc.cp.level3", property, NULL) > 0) &&
-                (atoi(property) == 1)) {
-            if(hw->getDisplayType() == HWC_DISPLAY_PRIMARY)
-             canAllowGPU = true;
-        }
-    }
-#endif
-
     bool blackOutLayer = isProtected() || (isSecure() && !hw->isSecure());
 
     RenderEngine& engine(mFlinger->getRenderEngine());
