@@ -35,7 +35,6 @@
 
 #include <hardware/hardware.h>
 #include <hardware/hwcomposer.h>
-#include <hardware/../../../aw/venc/gralloc_priv.h>
 
 #include <android/configuration.h>
 
@@ -740,7 +739,7 @@ status_t HWComposer::prepare() {
 
     int err = mHwc->prepare(mHwc, mNumDisplays, mLists);
     ALOGE_IF(err, "HWComposer: prepare failed (%s)", strerror(-err));
-#if 1
+#if 0
     bool bFullScreenVideo = false;
     numLayers = mLists[HWC_DISPLAY_PRIMARY]->numHwLayers;
     if(numLayers <= 3)
