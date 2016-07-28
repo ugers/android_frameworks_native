@@ -44,6 +44,10 @@ LOCAL_EXPORT_C_INCLUDE_DIRS := $(LOCAL_PATH)
 
 LOCAL_MODULE := libinputflinger
 
+ifeq ($(BOARD_USE_LEGACY_TOUCHSCREEN),true)
+LOCAL_CFLAGS += -DLEGACY_TOUCHSCREEN
+endif
+
 include $(BUILD_SHARED_LIBRARY)
 
 include $(call all-makefiles-under,$(LOCAL_PATH))
