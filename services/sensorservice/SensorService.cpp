@@ -196,6 +196,7 @@ void SensorService::onFirstRef()
             mLooper = new Looper(false);
             const size_t minBufferSize = SensorEventQueue::MAX_RECEIVE_BUFFER_EVENT_COUNT;
             mSensorEventBuffer = new sensors_event_t[minBufferSize];
+            memset(mSensorEventBuffer,0,sizeof(sensors_event_t)*minBufferSize);
             mSensorEventScratch = new sensors_event_t[minBufferSize];
             mMapFlushEventsToConnections = new SensorEventConnection const * [minBufferSize];
             mCurrentOperatingMode = NORMAL;
